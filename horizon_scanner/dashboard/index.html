@@ -63,6 +63,10 @@
   .statline b { color: var(--ink); font-weight: 600; }
   .statline .flag { color: var(--caution); }
 
+  .refresh-group { display: flex; gap: 6px; margin-left: 18px; align-items: center; }
+  .refresh-group .src { padding: 7px 11px; }
+  .refresh-group button:disabled { opacity: 0.4; cursor: not-allowed; }
+
   nav.tabs { display: flex; gap: 2px; padding: 0 22px;
     border-bottom: 1px solid var(--edge); background: var(--bg);
     position: sticky; top: 57px; z-index: 19; }
@@ -264,6 +268,12 @@
   .dlog .sell { color: var(--danger); }
   .dlog .pass, .dlog .watch, .dlog .hold { color: var(--ink-dim); }
   .dlog .flagcell { color: var(--caution); font-family: var(--mono); font-size: 11px; }
+  .dlog .row-del {
+    background: none; border: 1px solid var(--edge); color: var(--ink-faint);
+    width: 24px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 14px;
+    line-height: 1; padding: 0;
+  }
+  .dlog .row-del:hover { color: var(--danger); border-color: var(--danger); }
 
   /* ---- Settings ------------------------------------------------------*/
   .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 18px; }
@@ -296,6 +306,12 @@
     <span class="sweep">// signal sweep</span>
   </div>
   <div class="statline" id="statline"></div>
+  <div class="refresh-group" id="refresh-group">
+    <button class="act" data-source="all" id="refresh-btn">Refresh all</button>
+    <button class="ghost src" data-source="arxiv">arXiv</button>
+    <button class="ghost src" data-source="reddit">Reddit</button>
+    <button class="ghost src" data-source="trends">Trends</button>
+  </div>
 </header>
 
 <nav class="tabs">
@@ -333,6 +349,10 @@
     <div class="panel">
       <div class="panel-head"><span>Decision Log</span>
         <span style="color:var(--ink-faint)">buy / hold / sell / pass with emotional flagging</span></div>
+      <div class="filter-wrap">
+        <input type="text" id="decision-filter" placeholder="Filter by ticker, action, or reasoning..." spellcheck="false" autocomplete="off">
+        <button id="decision-filter-clear" title="Clear">&times;</button>
+      </div>
       <div id="decision-log"><div class="empty">Loading...</div></div>
     </div>
   </div>
@@ -361,6 +381,9 @@ const State = {
   config: {},
   pollTimer: null,
   filterText: "",
+  decisions: [],
+  decisionFilter: "",
+  refreshTimer: null,
 };
 
 const $ = (sel, root=document) => root.querySelector(sel);
@@ -774,23 +797,65 @@ async function loadDecisions(){
   const el = $("#decision-log");
   try {
     const { decisions } = await api("/api/decisions");
-    if(!decisions.length){ el.innerHTML = `<div class="empty">No decisions logged yet.</div>`; return; }
-    el.innerHTML = `<table class="dlog"><thead><tr>
-      <th>When</th><th>Action</th><th>Ticker</th><th>Reasoning</th><th>Flag</th></tr></thead><tbody>` +
-      decisions.map(d => {
-        const dt = (d.created_at||"").replace("T"," ").slice(0,16);
-        const cls = (d.decision_type||"").toLowerCase();
-        return `<tr>
-          <td class="dt">${esc(dt)}</td>
-          <td class="${cls}" style="font-family:var(--mono)">${esc(d.decision_type)}</td>
-          <td class="dt" style="color:var(--signal)">${esc(d.ticker||"-")}</td>
-          <td style="color:var(--ink-dim)">${esc(d.stated_reason||"")}</td>
-          <td class="flagcell">${d.emotional_flag ? "FLAGGED" : ""}</td>
-        </tr>` +
-        (d.emotional_flag && d.emotional_reason ?
-          `<tr><td></td><td colspan="4" style="color:var(--caution);font-size:11px;padding-top:0">${esc(d.emotional_reason)}</td></tr>` : "");
-      }).join("") + `</tbody></table>`;
+    State.decisions = decisions;
+    renderDecisions();
   } catch(e){ el.innerHTML = `<div class="empty">Failed to load: ${esc(e.message)}</div>`; }
+}
+
+function visibleDecisions(){
+  const q = (State.decisionFilter||"").trim().toLowerCase();
+  if(!q) return State.decisions;
+  return State.decisions.filter(d => {
+    const blob = [d.decision_type, d.ticker, d.stated_reason, d.emotional_reason,
+                  d.emotional_flag ? "flagged" : ""].join(" ").toLowerCase();
+    return blob.includes(q);
+  });
+}
+
+function renderDecisions(){
+  const el = $("#decision-log");
+  const all = State.decisions || [];
+  const q = (State.decisionFilter||"").trim();
+
+  if(!all.length){ el.innerHTML = `<div class="empty">No decisions logged yet.</div>`; return; }
+
+  const rows = visibleDecisions();
+  if(!rows.length){
+    el.innerHTML = `<div class="empty">No decisions match "<span class="filter-hit">${esc(q)}</span>".</div>`;
+    return;
+  }
+
+  el.innerHTML = `<table class="dlog"><thead><tr>
+    <th>When</th><th>Action</th><th>Ticker</th><th>Reasoning</th><th>Flag</th><th></th></tr></thead><tbody>` +
+    rows.map(d => {
+      const dt = (d.created_at||"").replace("T"," ").slice(0,16);
+      const cls = (d.decision_type||"").toLowerCase();
+      return `<tr>
+        <td class="dt">${esc(dt)}</td>
+        <td class="${cls}" style="font-family:var(--mono)">${esc(d.decision_type)}</td>
+        <td class="dt" style="color:var(--signal)">${esc(d.ticker||"-")}</td>
+        <td style="color:var(--ink-dim)">${esc(d.stated_reason||"")}</td>
+        <td class="flagcell">${d.emotional_flag ? "FLAGGED" : ""}</td>
+        <td style="text-align:right"><button class="row-del" data-id="${d.id}" title="Delete">&times;</button></td>
+      </tr>` +
+      (d.emotional_flag && d.emotional_reason ?
+        `<tr><td></td><td colspan="5" style="color:var(--caution);font-size:11px;padding-top:0">${esc(d.emotional_reason)}</td></tr>` : "");
+    }).join("") + `</tbody></table>`;
+
+  $$(".row-del", el).forEach(btn => btn.onclick = () => deleteDecision(btn.dataset.id));
+}
+
+async function deleteDecision(id){
+  const d = (State.decisions||[]).find(x => x.id === id);
+  const label = d ? `${d.decision_type}${d.ticker ? " " + d.ticker : ""}` : "this decision";
+  if(!confirm(`Delete ${label}? This cannot be undone.`)) return;
+  try {
+    await api("/api/decision/" + encodeURIComponent(id), { method:"DELETE" });
+    State.decisions = (State.decisions||[]).filter(x => x.id !== id);
+    renderDecisions();
+    loadStats();
+    toast("Decision deleted");
+  } catch(e){ toast("Delete failed: " + e.message); }
 }
 
 // ---- Settings -------------------------------------------------------
@@ -925,17 +990,81 @@ function wireSettings(){
   };
 }
 
+// ---- Pipeline refresh (collect + classify) --------------------------
+function wireRefresh(){
+  const group = $("#refresh-group");
+  const buttons = $$("button", group);
+
+  buttons.forEach(btn => {
+    btn.dataset.label = btn.textContent;   // remember original label
+    btn.onclick = async () => {
+      const source = btn.dataset.source;
+      // Disable the whole group while one runs
+      buttons.forEach(b => b.disabled = true);
+      btn.innerHTML = `<span class="spin"></span> starting...`;
+      try {
+        const { job_id, already } = await api("/api/pipeline/refresh", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ source })
+        });
+        if(already) toast("A refresh is already running");
+        pollRefresh(job_id, btn, buttons);
+      } catch(e){
+        toast("Refresh failed: " + e.message);
+        resetRefreshButtons(buttons);
+      }
+    };
+  });
+}
+
+function resetRefreshButtons(buttons){
+  buttons.forEach(b => { b.disabled = false; b.textContent = b.dataset.label; });
+}
+
+function pollRefresh(jobId, activeBtn, buttons){
+  clearInterval(State.refreshTimer);
+  State.refreshTimer = setInterval(async () => {
+    try {
+      const { jobs } = await api("/api/jobs");
+      const j = jobs.find(x => x.job_id === jobId);
+      if(!j) return;
+
+      if(j.status === "running"){
+        activeBtn.innerHTML = `<span class="spin"></span> ${esc(j.step||"working")}`;
+      }
+      if(j.status === "done"){
+        clearInterval(State.refreshTimer);
+        await loadTheses(); await loadClusters(); await loadStats();
+        resetRefreshButtons(buttons);
+        const src = j.source && j.source !== "all" ? j.source + ": " : "";
+        toast(`${src}${j.collected||0} collected, ${j.classified||0} classified`);
+      }
+      if(j.status === "error"){
+        clearInterval(State.refreshTimer);
+        resetRefreshButtons(buttons);
+        toast("Refresh failed: " + (j.error||"unknown"));
+      }
+    } catch(e){ /* keep polling */ }
+  }, 1200);
+}
+
 // ---- Filter wiring --------------------------------------------------
 function wireFilter(){
   const input = $("#cluster-filter");
   const clear = $("#filter-clear");
   input.oninput = () => { State.filterText = input.value; renderClusters(); };
   clear.onclick = () => { input.value = ""; State.filterText = ""; renderClusters(); input.focus(); };
+
+  const dInput = $("#decision-filter");
+  const dClear = $("#decision-filter-clear");
+  dInput.oninput = () => { State.decisionFilter = dInput.value; renderDecisions(); };
+  dClear.onclick = () => { dInput.value = ""; State.decisionFilter = ""; renderDecisions(); dInput.focus(); };
 }
 
 // ---- Boot -----------------------------------------------------------
 (async function init(){
   wireFilter();
+  wireRefresh();
   await loadStats();
   await loadTheses();
   await loadClusters();

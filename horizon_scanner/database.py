@@ -384,6 +384,18 @@ def log_decision(
     return decision_id
 
 
+def delete_decision(decision_id: str) -> bool:
+    """
+    Hard-delete a single decision by id. Returns True if a row was removed.
+    """
+    with get_connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM decisions WHERE id=?", (decision_id,)
+        )
+        return cur.rowcount > 0
+
+
+
 # ---------------------------------------------------------------------------
 # Stats (for dashboard)
 # ---------------------------------------------------------------------------

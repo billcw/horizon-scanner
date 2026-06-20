@@ -251,6 +251,10 @@ class HorizonHandler(BaseHTTPRequestHandler):
                 self._handle_thesis_run()
                 return
 
+            if route == "/api/pipeline/refresh":
+                self._handle_pipeline_refresh()
+                return
+
             if route == "/api/decision":
                 self._handle_decision()
                 return
@@ -263,6 +267,33 @@ class HorizonHandler(BaseHTTPRequestHandler):
 
         except Exception as e:
             logger.error("POST %s failed: %s", route, e)
+            logger.debug(traceback.format_exc())
+            self._send_json({"error": str(e)}, 500)
+
+    # ---- DELETE -----------------------------------------------------------
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        route = parsed.path
+
+        try:
+            # /api/decision/<id>
+            if route.startswith("/api/decision/"):
+                decision_id = route[len("/api/decision/"):].strip("/")
+                if not decision_id:
+                    self._send_json({"error": "decision id required"}, 400)
+                    return
+                removed = db.delete_decision(decision_id)
+                if removed:
+                    self._send_json({"ok": True, "deleted": decision_id})
+                else:
+                    self._send_json({"error": "decision not found"}, 404)
+                return
+
+            self._send_json({"error": f"Unknown route: {route}"}, 404)
+
+        except Exception as e:
+            logger.error("DELETE %s failed: %s", route, e)
             logger.debug(traceback.format_exc())
             self._send_json({"error": str(e)}, 500)
 
@@ -322,6 +353,96 @@ class HorizonHandler(BaseHTTPRequestHandler):
                 _JOBS[job_id]["status"] = "error"
                 _JOBS[job_id]["error"] = str(e)
                 _JOBS[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+
+    def _handle_pipeline_refresh(self):
+        """Kick off collect-then-classify in a background thread.
+        Optional body {"source": "arxiv"|"reddit"|"trends"} limits collection
+        to one source; omitted or "all" collects everything."""
+        body = self._read_json_body()
+        source = (body.get("source") or "all").lower()
+        if source not in ("all", "arxiv", "reddit", "trends"):
+            self._send_json({"error": f"Unknown source: {source}"}, 400)
+            return
+
+        # Only allow one refresh at a time (any source).
+        with _JOBS_LOCK:
+            for j in _JOBS.values():
+                if j.get("kind") == "refresh" and j.get("status") == "running":
+                    self._send_json({"ok": True, "job_id": j["job_id"], "already": True})
+                    return
+
+        job_id = str(uuid.uuid4())
+        with _JOBS_LOCK:
+            _JOBS[job_id] = {
+                "job_id": job_id,
+                "kind": "refresh",
+                "source": source,
+                "status": "running",
+                "step": "starting",
+                "collected": 0,
+                "classified": 0,
+                "error": None,
+                "started": datetime.now(timezone.utc).isoformat(),
+                "finished": None,
+            }
+
+        t = threading.Thread(target=self._run_refresh_job, args=(job_id, source), daemon=True)
+        t.start()
+        self._send_json({"ok": True, "job_id": job_id})
+
+    def _run_refresh_job(self, job_id, source="all"):
+        """
+        Background worker: collect from the requested source(s), then classify
+        until the queue is drained. Mirrors run.py's cmd_collect + cmd_classify,
+        with progress written to the job record for live UI status.
+        """
+        def _set(**kw):
+            with _JOBS_LOCK:
+                _JOBS[job_id].update(kw)
+
+        try:
+            # ---- Collect --------------------------------------------------
+            from ..collectors.arxiv_collector  import run as run_arxiv
+            from ..collectors.reddit_collector import run as run_reddit
+            from ..collectors.trends_collector import run as run_trends
+
+            all_sources = {"arxiv": run_arxiv, "reddit": run_reddit, "trends": run_trends}
+            if source == "all":
+                targets = all_sources.items()
+            else:
+                targets = [(source, all_sources[source])]
+
+            collected = 0
+            for name, fn in targets:
+                _set(step=f"collecting: {name}")
+                try:
+                    n = fn() or 0
+                    collected += n
+                    _set(collected=collected)
+                except Exception as e:
+                    logger.warning("Collector %s failed during refresh: %s", name, e)
+
+            # ---- Classify (drain the queue) -------------------------------
+            _set(step="classifying signals")
+            from ..classifier.signal_classifier import run_classifier
+
+            classified = 0
+            # Cap iterations so a misbehaving batch can't loop forever.
+            for _ in range(100):
+                n = run_classifier(batch_size=100) or 0
+                if n == 0:
+                    break
+                classified += n
+                _set(classified=classified, step=f"classifying ({classified} so far)")
+
+            _set(status="done", step="complete",
+                 finished=datetime.now(timezone.utc).isoformat())
+
+        except Exception as e:
+            logger.error("Refresh job %s failed: %s", job_id, e)
+            logger.debug(traceback.format_exc())
+            _set(status="error", error=str(e),
+                 finished=datetime.now(timezone.utc).isoformat())
 
     def _handle_decision_preview(self):
         """

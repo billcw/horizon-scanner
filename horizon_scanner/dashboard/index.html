@@ -289,6 +289,29 @@
     display: flex; gap: 12px; align-items: center; }
   .save-note { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
 
+  .sources-section { margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--edge); }
+  .sources-head { margin-bottom: 16px; }
+  .sources-head h2 { font-size: 15px; margin: 0 0 4px; color: var(--ink); }
+  .src-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px;
+    max-height: 320px; overflow-y: auto; }
+  .src-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+    border-radius: 5px; }
+  .src-item:hover { background: var(--panel-2); }
+  .src-check { display: flex; align-items: center; gap: 9px; flex: 1; cursor: pointer; min-width: 0; }
+  .src-check input { accent-color: var(--signal); width: 14px; height: 14px; flex-shrink: 0; }
+  .src-val { font-family: var(--mono); font-size: 12px; color: var(--ink); white-space: nowrap; }
+  .src-lab { font-size: 11px; color: var(--ink-faint); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .src-del { background: none; border: 1px solid var(--edge); color: var(--ink-faint);
+    width: 22px; height: 22px; border-radius: 4px; cursor: pointer; font-size: 13px;
+    line-height: 1; padding: 0; flex-shrink: 0; }
+  .src-del:hover { color: var(--danger); border-color: var(--danger); }
+  .src-add { display: flex; gap: 6px; }
+  .src-add input { flex: 1; background: #0d1117; border: 1px solid var(--edge); color: var(--ink);
+    border-radius: 5px; padding: 7px 9px; font-family: var(--mono); font-size: 12px; }
+  .src-add input:focus { outline: none; border-color: var(--signal-dk); }
+  .src-hint { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); margin-top: 8px; }
+
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
     background: var(--panel-2); border: 1px solid var(--signal-dk); color: var(--ink);
     padding: 12px 20px; border-radius: 8px; font-family: var(--mono); font-size: 12px;
@@ -384,6 +407,7 @@ const State = {
   decisions: [],
   decisionFilter: "",
   refreshTimer: null,
+  sources: [],
 };
 
 const $ = (sel, root=document) => root.querySelector(sel);
@@ -868,7 +892,104 @@ async function loadSettings(){
     $("#model-options").innerHTML = State.modelSuggestions.map(m => `<option value="${esc(m)}">`).join("");
     el.innerHTML = renderSettings(data.config);
     wireSettings();
+    await loadSources();
   } catch(e){ el.innerHTML = `<div class="empty">Failed to load settings: ${esc(e.message)}</div>`; }
+}
+
+// ---- Source library (collector categories / topics / subreddits) ----
+const SOURCE_GROUPS = [
+  { type:"arxiv",  title:"arXiv categories", placeholder:"e.g. astro-ph.EP",
+    hint:"arXiv category codes - see arxiv.org/category_taxonomy" },
+  { type:"trends", title:"Google Trends topics", placeholder:"e.g. fusion energy",
+    hint:"Free-text search topics" },
+  { type:"reddit", title:"Subreddits", placeholder:"e.g. energy",
+    hint:"Subreddit names without the r/ prefix" },
+];
+
+async function loadSources(){
+  const wrap = $("#sources-wrap");
+  if(!wrap) return;
+  try {
+    const { sources } = await api("/api/sources");
+    State.sources = sources;
+    renderSources();
+  } catch(e){ wrap.innerHTML = `<div class="empty">Failed to load sources: ${esc(e.message)}</div>`; }
+}
+
+function renderSources(){
+  const wrap = $("#sources-wrap");
+  if(!wrap) return;
+  const all = State.sources || [];
+
+  wrap.innerHTML = SOURCE_GROUPS.map(g => {
+    const rows = all.filter(s => s.source_type === g.type);
+    const enabledCount = rows.filter(s => s.enabled).length;
+    const items = rows.length ? rows.map(s => `
+      <div class="src-item">
+        <label class="src-check">
+          <input type="checkbox" data-id="${s.id}" ${s.enabled ? "checked" : ""}>
+          <span class="src-val">${esc(s.value)}</span>
+          ${s.label ? `<span class="src-lab">${esc(s.label)}</span>` : ""}
+        </label>
+        <button class="src-del" data-id="${s.id}" title="Remove">&times;</button>
+      </div>`).join("") : `<div class="empty" style="padding:18px">No ${esc(g.type)} sources yet.</div>`;
+
+    return `<div class="set-card">
+      <h3>${g.title} <span style="color:var(--ink-faint);font-weight:400">(${enabledCount}/${rows.length} on)</span></h3>
+      <div class="src-list">${items}</div>
+      <div class="src-add">
+        <input type="text" id="add-${g.type}" placeholder="${g.placeholder}" spellcheck="false" autocomplete="off">
+        <button class="ghost" data-add="${g.type}">Add</button>
+      </div>
+      <div class="src-hint">${g.hint}</div>
+    </div>`;
+  }).join("");
+
+  // Toggle checkboxes
+  $$(".src-check input", wrap).forEach(cb => cb.onchange = async () => {
+    try {
+      await api("/api/sources/toggle", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ id: cb.dataset.id, enabled: cb.checked })});
+      const s = State.sources.find(x => x.id === cb.dataset.id);
+      if(s) s.enabled = cb.checked ? 1 : 0;
+      renderSources();
+    } catch(e){ toast("Toggle failed: " + e.message); cb.checked = !cb.checked; }
+  });
+
+  // Delete buttons
+  $$(".src-del", wrap).forEach(btn => btn.onclick = async () => {
+    const s = (State.sources||[]).find(x => x.id === btn.dataset.id);
+    if(!confirm(`Remove "${s ? s.value : "this source"}" from the library?`)) return;
+    try {
+      await api("/api/sources/" + encodeURIComponent(btn.dataset.id), { method:"DELETE" });
+      State.sources = State.sources.filter(x => x.id !== btn.dataset.id);
+      renderSources();
+      toast("Source removed");
+    } catch(e){ toast("Delete failed: " + e.message); }
+  });
+
+  // Add buttons
+  $$("[data-add]", wrap).forEach(btn => btn.onclick = async () => {
+    const type = btn.dataset.add;
+    const input = $("#add-" + type);
+    const value = (input.value || "").trim();
+    if(!value){ input.focus(); return; }
+    try {
+      await api("/api/sources", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ source_type: type, value })});
+      input.value = "";
+      await loadSources();
+      toast(`Added ${value}`);
+    } catch(e){ toast("Add failed: " + e.message); }
+  });
+
+  // Enter-to-add
+  SOURCE_GROUPS.forEach(g => {
+    const input = $("#add-" + g.type);
+    if(input) input.onkeydown = (e) => {
+      if(e.key === "Enter"){ e.preventDefault(); $(`[data-add="${g.type}"]`).click(); }
+    };
+  });
 }
 
 function modelInput(id, val){
@@ -935,6 +1056,14 @@ function renderSettings(c){
   <div class="save-bar">
     <button class="act" id="set-save">Save settings</button>
     <span class="save-note">Changes take effect on the next thesis run.</span>
+  </div>
+
+  <div class="sources-section">
+    <div class="sources-head">
+      <h2>Collection sources</h2>
+      <span class="save-note">Toggle which sources the collectors pull from. Changes apply on the next refresh - no save needed.</span>
+    </div>
+    <div class="settings-grid" id="sources-wrap"><div class="empty">Loading sources...</div></div>
   </div>`;
 }
 

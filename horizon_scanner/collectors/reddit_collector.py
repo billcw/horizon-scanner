@@ -1,23 +1,37 @@
 """
 collectors/reddit_collector.py
-
 Pulls top posts from configured subreddits.
-Uses public Reddit JSON API — no OAuth needed for read-only access.
-If REDDIT_CLIENT_ID is set in .env, uses PRAW for higher rate limits.
+Uses public Reddit JSON API - no OAuth needed for read-only access.
+
+Subreddits are read from the collector_sources library table (enabled rows),
+falling back to config.yaml when the library has no reddit rows.
 """
 
 import hashlib
 import logging
 import time
+from datetime import datetime, timezone
 
 import requests
 
 from ..config import get_config, get_reddit_creds
-from ..database import insert_signal
+from ..database import insert_signal, get_enabled_source_values
 
 logger = logging.getLogger(__name__)
 
 HEADERS = {"User-Agent": "HorizonScanner/1.0 (research tool)"}
+
+
+def _resolve_subreddits(red_cfg) -> list:
+    """Prefer enabled subreddits from the source library; fall back to config."""
+    try:
+        library = get_enabled_source_values("reddit")
+    except Exception as e:
+        logger.warning(f"Could not read source library, using config: {e}")
+        library = []
+    if library:
+        return library
+    return red_cfg.get("subreddits", [])
 
 
 def _fetch_public(subreddit: str, limit: int, min_score: int) -> list:
@@ -44,12 +58,13 @@ def run():
         logger.info("Reddit collector disabled.")
         return
 
-    subreddits = red_cfg.get("subreddits", [])
+    subreddits = _resolve_subreddits(red_cfg)
     limit      = red_cfg.get("post_limit", 25)
     min_score  = red_cfg.get("min_score", 50)
 
-    total_new = 0
+    logger.info(f"Reddit collecting across {len(subreddits)} subreddits: {subreddits}")
 
+    total_new = 0
     for sub in subreddits:
         posts = _fetch_public(sub, limit, min_score)
         logger.info(f"r/{sub}: {len(posts)} posts above score {min_score}.")
@@ -84,15 +99,11 @@ def run():
             )
             if signal_id:
                 total_new += 1
-
         time.sleep(2)  # be polite to Reddit
 
     logger.info(f"Reddit collector complete. {total_new} new signals stored.")
     return total_new
 
-
-# Fix missing import
-from datetime import datetime, timezone
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

@@ -124,6 +124,17 @@ CREATE INDEX IF NOT EXISTS idx_theses_state         ON theses(state);
 CREATE INDEX IF NOT EXISTS idx_theses_confidence    ON theses(confidence_rating);
 CREATE INDEX IF NOT EXISTS idx_monitoring_thesis    ON monitoring_events(thesis_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_thesis     ON decisions(thesis_id);
+
+-- Manageable collector source library (arxiv categories, trends topics, subreddits)
+CREATE TABLE IF NOT EXISTS collector_sources (
+    id            TEXT PRIMARY KEY,
+    source_type   TEXT NOT NULL,          -- arxiv | trends | reddit
+    value         TEXT NOT NULL,          -- e.g. cs.AI | solid state battery | Futurology
+    label         TEXT,                   -- optional human note
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    added_at      TEXT NOT NULL,
+    UNIQUE(source_type, value)
+);
 """
 
 
@@ -419,3 +430,78 @@ def get_stats() -> dict:
         "theses":          {"total": total_theses, "watch": watch, "building": building, "candidate": candidate},
         "decisions":       {"total": total_decisions, "emotional_flags": emotional_sells},
     }
+
+
+# ---------------------------------------------------------------------------
+# Collector source library (manageable from the dashboard)
+# ---------------------------------------------------------------------------
+
+def list_sources(source_type: str = None) -> list:
+    """All source-library rows, optionally filtered by type. Newest first."""
+    with get_connection() as conn:
+        if source_type:
+            rows = conn.execute(
+                """SELECT * FROM collector_sources WHERE source_type=?
+                   ORDER BY value ASC""", (source_type,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM collector_sources ORDER BY source_type, value ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_enabled_source_values(source_type: str) -> list:
+    """Return just the enabled values for a source type (what a collector iterates)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT value FROM collector_sources
+               WHERE source_type=? AND enabled=1 ORDER BY value ASC""",
+            (source_type,)
+        ).fetchall()
+        return [r["value"] for r in rows]
+
+
+def add_source(source_type: str, value: str, label: str = "", enabled: bool = True) -> str:
+    """
+    Add a source to the library. Idempotent on (source_type, value): if it
+    already exists, returns the existing id without duplicating.
+    """
+    value = (value or "").strip()
+    if not value:
+        raise ValueError("Source value cannot be empty")
+    with get_connection() as conn:
+        existing = conn.execute(
+            "SELECT id FROM collector_sources WHERE source_type=? AND value=?",
+            (source_type, value)
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        sid = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO collector_sources
+               (id, source_type, value, label, enabled, added_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (sid, source_type, value, label or "", int(bool(enabled)),
+             datetime.now(timezone.utc).isoformat())
+        )
+        return sid
+
+
+def set_source_enabled(source_id: str, enabled: bool) -> bool:
+    """Enable/disable a single source. Returns True if a row changed."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE collector_sources SET enabled=? WHERE id=?",
+            (int(bool(enabled)), source_id)
+        )
+        return cur.rowcount > 0
+
+
+def delete_source(source_id: str) -> bool:
+    """Hard-delete a source from the library. Returns True if a row was removed."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM collector_sources WHERE id=?", (source_id,)
+        )
+        return cur.rowcount > 0

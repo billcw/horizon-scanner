@@ -1,8 +1,11 @@
 """
 collectors/arxiv_collector.py
-
 Pulls recent papers from arXiv in configured categories.
-Uses the arXiv Atom feed — no API key needed.
+Uses the arXiv Atom feed - no API key needed.
+
+Categories are read from the collector_sources library table (enabled rows).
+If the library has no arxiv rows (e.g. fresh machine before seeding), it falls
+back to the categories list in config.yaml, so the collector always works.
 """
 
 import hashlib
@@ -12,9 +15,23 @@ from datetime import datetime, timezone
 import feedparser
 
 from ..config import get_config
-from ..database import insert_signal
+from ..database import insert_signal, get_enabled_source_values
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_categories(arxiv_cfg) -> list:
+    """
+    Prefer enabled categories from the source library; fall back to config.yaml.
+    """
+    try:
+        library = get_enabled_source_values("arxiv")
+    except Exception as e:
+        logger.warning(f"Could not read source library, using config: {e}")
+        library = []
+    if library:
+        return library
+    return arxiv_cfg.get("categories", ["cs.AI"])
 
 
 def run():
@@ -26,19 +43,19 @@ def run():
         logger.info("arXiv collector disabled in config.")
         return
 
-    categories  = arxiv_cfg.get("categories", ["cs.AI"])
+    categories  = _resolve_categories(arxiv_cfg)
     max_results = arxiv_cfg.get("max_results_per_run", 100)
     base_url    = cfg["apis"]["arxiv_base"]
 
-    total_new = 0
+    logger.info(f"arXiv collecting across {len(categories)} categories: {categories}")
 
+    total_new = 0
     for category in categories:
         url = (
             f"{base_url}?search_query=cat:{category}"
             f"&start=0&max_results={max_results}"
             f"&sortBy=submittedDate&sortOrder=descending"
         )
-
         try:
             feed = feedparser.parse(url)
             logger.info(f"arXiv [{category}]: fetched {len(feed.entries)} entries.")
@@ -67,10 +84,8 @@ def run():
                     published_at = published,
                     metadata     = {"category": category},
                 )
-
                 if signal_id:
                     total_new += 1
-
         except Exception as e:
             logger.error(f"arXiv collector error for {category}: {e}")
 

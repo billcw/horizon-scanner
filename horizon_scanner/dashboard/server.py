@@ -228,6 +228,10 @@ class HorizonHandler(BaseHTTPRequestHandler):
                     self._send_json({"jobs": list(_JOBS.values())})
                 return
 
+            if route == "/api/sources":
+                self._send_json({"sources": db.list_sources()})
+                return
+
             # Unknown route
             self._send_json({"error": f"Unknown route: {route}"}, 404)
 
@@ -263,6 +267,14 @@ class HorizonHandler(BaseHTTPRequestHandler):
                 self._handle_decision_preview()
                 return
 
+            if route == "/api/sources":
+                self._handle_source_add()
+                return
+
+            if route == "/api/sources/toggle":
+                self._handle_source_toggle()
+                return
+
             self._send_json({"error": f"Unknown route: {route}"}, 404)
 
         except Exception as e:
@@ -288,6 +300,19 @@ class HorizonHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": True, "deleted": decision_id})
                 else:
                     self._send_json({"error": "decision not found"}, 404)
+                return
+
+            # /api/sources/<id>
+            if route.startswith("/api/sources/"):
+                source_id = route[len("/api/sources/"):].strip("/")
+                if not source_id:
+                    self._send_json({"error": "source id required"}, 400)
+                    return
+                removed = db.delete_source(source_id)
+                if removed:
+                    self._send_json({"ok": True, "deleted": source_id})
+                else:
+                    self._send_json({"error": "source not found"}, 404)
                 return
 
             self._send_json({"error": f"Unknown route: {route}"}, 404)
@@ -443,6 +468,38 @@ class HorizonHandler(BaseHTTPRequestHandler):
             logger.debug(traceback.format_exc())
             _set(status="error", error=str(e),
                  finished=datetime.now(timezone.utc).isoformat())
+
+    def _handle_source_add(self):
+        """Add a source to the library. Body: {source_type, value, label?}."""
+        body = self._read_json_body()
+        source_type = (body.get("source_type") or "").lower()
+        value = body.get("value", "")
+        label = body.get("label", "")
+        if source_type not in ("arxiv", "trends", "reddit"):
+            self._send_json({"error": "source_type must be arxiv, trends, or reddit"}, 400)
+            return
+        if not (value or "").strip():
+            self._send_json({"error": "value required"}, 400)
+            return
+        try:
+            sid = db.add_source(source_type, value, label, enabled=True)
+            self._send_json({"ok": True, "id": sid})
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+
+    def _handle_source_toggle(self):
+        """Enable/disable a source. Body: {id, enabled}."""
+        body = self._read_json_body()
+        source_id = body.get("id")
+        enabled = bool(body.get("enabled"))
+        if not source_id:
+            self._send_json({"error": "id required"}, 400)
+            return
+        changed = db.set_source_enabled(source_id, enabled)
+        if changed:
+            self._send_json({"ok": True})
+        else:
+            self._send_json({"error": "source not found"}, 404)
 
     def _handle_decision_preview(self):
         """

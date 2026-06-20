@@ -1,0 +1,43 @@
+# Horizon Scanner — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Core
+anthropic>=0.40.0
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+requests>=2.31.0
+
+# Database
+# SQLite is built into Python — no install needed
+
+# Vector store
+chromadb>=0.5.0
+
+# Embeddings (for signal deduplication and clustering)
+sentence-transformers>=3.0.0
+
+# Collectors
+feedparser>=6.0.11          # arXiv RSS feeds
+praw>=7.7.1                 # Reddit API
+pytrends>=4.9.2             # Google Trends
+
+# LangGraph orchestration (L3 thesis loops)
+langgraph>=0.2.0
+langchain-anthropic>=0.3.0
+langchain-core>=0.3.0
+
+# Data processing
+numpy>=1.26.0
+pandas>=2.1.0
+scikit-learn>=1.4.0         # cosine similarity for dedup
+
+# Scheduling
+schedule>=1.2.1             # simple in-process scheduler
+
+# Web / HTTP
+beautifulsoup4>=4.12.0
+lxml>=5.1.0
+
+# Dashboard
+# Pure HTML/JS - no Python web framework needed
+# We write the DB to JSON for the dashboard to read

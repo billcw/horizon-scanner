@@ -1,0 +1,106 @@
+# =============================================================================
+# HORIZON SCANNER — config.yaml
+# All settings live here. API keys go in .env (never commit .env)
+# Copy this file to any machine, update paths if needed, and go.
+# =============================================================================
+
+# --- Database -----------------------------------------------------------------
+database:
+  path: "data/horizon_scanner.db"      # relative to project root
+
+# --- ChromaDB -----------------------------------------------------------------
+chromadb:
+  path: "data/chromadb"                # relative to project root
+  collection_signals: "signals"
+  collection_theses:  "theses"
+
+# --- Logging ------------------------------------------------------------------
+logging:
+  path: "logs/horizon_scanner.log"
+  level: "INFO"                        # DEBUG | INFO | WARNING | ERROR
+
+# --- Collector schedule (cron-style, but we just read these as labels) --------
+collectors:
+  arxiv:
+    enabled: true
+    categories:
+      - "cs.AI"
+      - "cs.LG"
+      - "cs.AR"
+      - "cs.ET"
+      - "quant-ph"
+      - "cond-mat.mtrl-sci"
+    max_results_per_run: 100
+    schedule: "daily"
+
+  google_trends:
+    enabled: true
+    schedule: "daily"
+    geo: "US"
+    seed_topics:
+      - "AI infrastructure"
+      - "orbital computing"
+      - "neuromorphic chip"
+      - "solid state battery"
+      - "quantum error correction"
+      - "grid transformer"
+      - "small modular reactor"
+      - "brain computer interface"
+      - "humanoid robot"
+      - "photonic computing"
+
+  reddit:
+    enabled: true
+    schedule: "6hourly"
+    subreddits:
+      - "Futurology"
+      - "technology"
+      - "singularity"
+      - "investing"
+      - "SecurityAnalysis"
+    post_limit: 25
+    min_score: 50
+
+  uspto:
+    enabled: true
+    schedule: "weekly"
+    cpc_codes:
+      - "G06N"      # AI / machine learning
+      - "H01L"      # Semiconductors
+      - "H04B10"    # Optical comms
+      - "G16Y"      # IoT
+      - "B64G"      # Space systems
+    max_results_per_run: 200
+
+# --- L2 Classifier ------------------------------------------------------------
+classifier:
+  model: "claude-haiku-4-5-20251001"   # fast/cheap for high-volume triage
+  fallback_model: "claude-sonnet-4-6"  # used if haiku confidence < threshold
+  confidence_threshold: 0.70           # below this = retry with sonnet
+  dedup_similarity_threshold: 0.92     # cosine similarity for near-duplicate detection
+  dedup_lookback_days: 90
+  cluster_window_days: 30
+  cluster_escalation_threshold: 3      # signals in a cluster before L3 fires
+
+# --- L3 Thesis Loop -----------------------------------------------------------
+thesis:
+  step_model: "claude-sonnet-4-6"          # steps 1-6 and 8
+  adversarial_model: "claude-sonnet-4-6"   # step 7 (upgrade to opus when ready)
+  max_search_calls_per_step: 3
+  max_retries_on_missing_citations: 2
+  output_dir: "data/exports"
+
+# --- L4 Monitoring ------------------------------------------------------------
+monitoring:
+  model: "claude-haiku-4-5-20251001"
+  schedule: "weekly"
+  probability_alert_threshold: 0.15    # alert if probability shifts >15%
+  archive_after_days: 180              # archive theses with no new signals
+
+# --- API endpoints (keys in .env) --------------------------------------------
+apis:
+  anthropic_base: "https://api.anthropic.com"
+  perplexity_base: "https://api.perplexity.ai"
+  reddit_base:    "https://www.reddit.com"
+  arxiv_base:     "http://export.arxiv.org/api/query"
+  uspto_base:     "https://developer.uspto.gov/ibd-api/v1"

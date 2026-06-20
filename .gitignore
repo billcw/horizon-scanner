@@ -1,0 +1,39 @@
+# Secrets - never commit
+.env
+
+# Database and vector store (data stays local, not in git)
+data/horizon_scanner.db
+data/chromadb/
+data/exports/
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+env/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Keep folder structure in git
+!data/.gitkeep
+!data/chromadb/.gitkeep
+!data/exports/.gitkeep
+!logs/.gitkeep

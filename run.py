@@ -201,6 +201,13 @@ def cmd_thesis(args):
         logger.exception("Thesis loop error")
 
 
+def cmd_dashboard(args):
+    from horizon_scanner.dashboard.server import serve
+    port = getattr(args, "port", None) or 8080
+    open_browser = not getattr(args, "no_browser", False)
+    serve(host="127.0.0.1", port=port, open_browser=open_browser)
+
+
 def cmd_schedule(args):
     import schedule
     import time
@@ -245,6 +252,10 @@ def main():
     p_thesis = sub.add_parser("thesis", help="Run L3 thesis loop for a cluster")
     p_thesis.add_argument("--cluster", required=True, help="Cluster UUID to process")
 
+    p_dash = sub.add_parser("dashboard", help="Launch the web dashboard")
+    p_dash.add_argument("--port", type=int, default=8080, help="Port (default 8080)")
+    p_dash.add_argument("--no-browser", action="store_true", help="Do not auto-open the browser")
+
     p_seed = sub.add_parser("seed", help="Manually seed a thesis topic")
     p_seed.add_argument("--topic", required=True, help="Topic to seed")
 
@@ -258,6 +269,7 @@ def main():
         "stats":    cmd_stats,
         "seed":     cmd_seed,
         "thesis":   cmd_thesis,
+        "dashboard": cmd_dashboard,
         "schedule": cmd_schedule,
     }
 

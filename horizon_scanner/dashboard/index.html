@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Horizon Scanner</title>
+<style>
+  /* ---- Design tokens -------------------------------------------------
+     Instrument-panel aesthetic: deep slate ground, phosphor-cyan signal,
+     amber for caution (emotional flags), measured monospace for data.
+     Built for someone who reads control-room screens. -------------------*/
+  :root {
+    --bg:        #0d1117;
+    --panel:     #161b22;
+    --panel-2:   #1c232d;
+    --edge:      #2a3340;
+    --edge-soft: #222a35;
+    --ink:       #d7e0ea;
+    --ink-dim:   #8b97a6;
+    --ink-faint: #5a6573;
+    --signal:    #38d2c4;   /* phosphor cyan - primary */
+    --signal-dk: #1d7a72;
+    --caution:   #e0a34a;   /* amber - emotional flags, warnings */
+    --danger:    #e06c75;   /* bear / kill */
+    --good:      #7fc97f;   /* bull / pass-safe */
+    --violet:    #a99be0;   /* structural */
+    --mono: "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+    --sans: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- Top bar -------------------------------------------------------*/
+  header {
+    display: flex; align-items: center; gap: 18px;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--edge);
+    background: linear-gradient(180deg, #11161d, #0d1117);
+    position: sticky; top: 0; z-index: 20;
+  }
+  .brand { display: flex; align-items: baseline; gap: 12px; }
+  .brand h1 {
+    font-size: 16px; font-weight: 600; letter-spacing: 0.5px; margin: 0;
+    color: var(--ink);
+  }
+  .brand .sweep {
+    font-family: var(--mono); font-size: 11px; color: var(--signal);
+    letter-spacing: 1.5px; text-transform: uppercase;
+  }
+  .statline {
+    margin-left: auto; display: flex; gap: 20px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-dim);
+  }
+  .statline b { color: var(--ink); font-weight: 600; }
+  .statline .flag { color: var(--caution); }
+
+  nav.tabs { display: flex; gap: 2px; padding: 0 22px;
+    border-bottom: 1px solid var(--edge); background: var(--bg);
+    position: sticky; top: 57px; z-index: 19; }
+  nav.tabs button {
+    background: none; border: none; color: var(--ink-dim);
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.5px;
+    padding: 11px 16px; cursor: pointer; border-bottom: 2px solid transparent;
+    text-transform: uppercase;
+  }
+  nav.tabs button:hover { color: var(--ink); }
+  nav.tabs button.active { color: var(--signal); border-bottom-color: var(--signal); }
+
+  main { padding: 22px; max-width: 1400px; margin: 0 auto; }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* ---- Cluster list --------------------------------------------------*/
+  .grid-2 { display: grid; grid-template-columns: 360px 1fr; gap: 20px; }
+  @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 8px; overflow: hidden;
+  }
+  .panel-head {
+    padding: 12px 16px; border-bottom: 1px solid var(--edge);
+    font-family: var(--mono); font-size: 11px; letter-spacing: 1px;
+    color: var(--ink-dim); text-transform: uppercase;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .panel-body { padding: 8px; }
+
+  .filter-wrap { display: flex; align-items: center; gap: 6px; padding: 9px 12px;
+    border-bottom: 1px solid var(--edge-soft); }
+  .filter-wrap input {
+    flex: 1; background: #0d1117; border: 1px solid var(--edge); color: var(--ink);
+    border-radius: 5px; padding: 7px 10px; font-family: var(--mono); font-size: 12px;
+  }
+  .filter-wrap input:focus { outline: none; border-color: var(--signal-dk); }
+  .filter-wrap input::placeholder { color: var(--ink-faint); }
+  .filter-wrap button {
+    background: none; border: 1px solid var(--edge); color: var(--ink-faint);
+    width: 30px; height: 32px; border-radius: 5px; cursor: pointer; font-size: 16px;
+    flex-shrink: 0; line-height: 1;
+  }
+  .filter-wrap button:hover { color: var(--ink); border-color: var(--ink-faint); }
+  .filter-hit { color: var(--signal); }
+
+  .cluster {
+    padding: 11px 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid transparent; margin-bottom: 4px;
+    display: flex; align-items: center; gap: 11px;
+  }
+  .cluster:hover { background: var(--panel-2); border-color: var(--edge-soft); }
+  .cluster.sel { background: var(--panel-2); border-color: var(--signal-dk); }
+  .count {
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    min-width: 30px; height: 30px; border-radius: 5px;
+    display: grid; place-items: center; flex-shrink: 0;
+    background: #11161d; color: var(--ink-dim); border: 1px solid var(--edge);
+  }
+  .cluster.ready .count { color: var(--signal); border-color: var(--signal-dk); }
+  .cluster-meta { min-width: 0; }
+  .cluster-theme {
+    font-size: 13px; color: var(--ink); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .cluster-sub { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); }
+  .pill {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.5px;
+    padding: 2px 6px; border-radius: 3px; text-transform: uppercase;
+  }
+  .pill.ready { background: rgba(56,210,196,0.12); color: var(--signal); }
+  .pill.done  { background: rgba(169,155,224,0.12); color: var(--violet); }
+
+  /* ---- Buttons -------------------------------------------------------*/
+  button.act {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.5px;
+    text-transform: uppercase; cursor: pointer;
+    background: var(--signal-dk); color: #eafffd; border: 1px solid var(--signal);
+    padding: 7px 13px; border-radius: 5px;
+  }
+  button.act:hover { background: var(--signal); color: #06201d; }
+  button.act:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.ghost {
+    background: none; border: 1px solid var(--edge); color: var(--ink-dim);
+    padding: 7px 13px; border-radius: 5px; font-family: var(--mono);
+    font-size: 11px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  button.ghost:hover { color: var(--ink); border-color: var(--ink-faint); }
+
+  /* ---- Thesis viewer -------------------------------------------------*/
+  .empty {
+    padding: 60px 30px; text-align: center; color: var(--ink-faint);
+    font-family: var(--mono); font-size: 12px;
+  }
+  .thesis-head { padding: 18px; border-bottom: 1px solid var(--edge); }
+  .thesis-title { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .thesis-theme { font-family: var(--mono); font-size: 11px; color: var(--signal); letter-spacing: 0.5px; }
+
+  .scores { display: flex; gap: 14px; margin-top: 16px; flex-wrap: wrap; }
+  .score-card {
+    flex: 1; min-width: 120px; background: #11161d; border: 1px solid var(--edge);
+    border-radius: 7px; padding: 13px 15px;
+  }
+  .score-num { font-family: var(--mono); font-size: 26px; font-weight: 700; line-height: 1; }
+  .score-lab { font-family: var(--mono); font-size: 10px; color: var(--ink-faint);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-top: 6px; }
+  .score-card .bar { height: 3px; background: var(--edge); border-radius: 2px; margin-top: 9px; overflow: hidden; }
+  .score-card .bar > div { height: 100%; border-radius: 2px; }
+
+  .badges { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .badge {
+    font-family: var(--mono); font-size: 10px; padding: 4px 9px; border-radius: 4px;
+    letter-spacing: 0.5px; text-transform: uppercase; border: 1px solid var(--edge);
+    color: var(--ink-dim);
+  }
+  .badge.risk-VERY    { color: var(--danger); border-color: rgba(224,108,117,0.4); }
+  .badge.risk-HIGH    { color: var(--caution); border-color: rgba(224,163,74,0.4); }
+  .badge.risk-MEDIUM  { color: var(--signal); }
+  .badge.conf  { color: var(--violet); border-color: rgba(169,155,224,0.4); }
+
+  section.block { padding: 18px; border-bottom: 1px solid var(--edge-soft); }
+  section.block h3 {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--ink-dim); margin: 0 0 13px;
+  }
+
+  /* ---- Bottleneck ring map (SVG) ------------------------------------*/
+  .ringwrap { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: center; }
+  @media (max-width: 760px){ .ringwrap { grid-template-columns: 1fr; } }
+  .ring-legend { font-family: var(--mono); font-size: 11px; }
+  .ring-legend .row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .ring-legend .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .ring-legend .lab { color: var(--ink-dim); }
+  .ring-legend .lab b { color: var(--ink); }
+
+  /* ---- Scenario tree -------------------------------------------------*/
+  .scenarios { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 11px; }
+  .scn { background: #11161d; border: 1px solid var(--edge); border-radius: 7px; padding: 13px;
+    border-top-width: 2px; }
+  .scn.base { border-top-color: var(--signal); }
+  .scn.bull { border-top-color: var(--good); }
+  .scn.bear { border-top-color: var(--danger); }
+  .scn.black { border-top-color: var(--violet); }
+  .scn .lab { font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.5px; display: flex; justify-content: space-between; }
+  .scn .prob { color: var(--ink-dim); }
+  .scn .desc { font-size: 12px; color: var(--ink-dim); margin-top: 8px; }
+  .scn .impl { font-size: 11px; color: var(--ink-faint); margin-top: 8px; font-style: italic; }
+
+  /* ---- Entity tables -------------------------------------------------*/
+  table.ents { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.ents td { padding: 6px 8px; border-bottom: 1px solid var(--edge-soft); vertical-align: top; }
+  table.ents .tk { font-family: var(--mono); color: var(--signal); white-space: nowrap; }
+  table.ents .co { color: var(--ink); white-space: nowrap; }
+  table.ents .rl { color: var(--ink-dim); }
+  .ring-label { font-family: var(--mono); font-size: 10px; color: var(--ink-faint);
+    text-transform: uppercase; letter-spacing: 0.5px; margin: 14px 0 5px; }
+
+  .bear-box { background: rgba(224,108,117,0.06); border: 1px solid rgba(224,108,117,0.25);
+    border-radius: 7px; padding: 14px; }
+  .bear-box .verdict { font-family: var(--mono); font-size: 11px; color: var(--danger);
+    letter-spacing: 0.5px; margin-bottom: 8px; }
+  .kill-list { list-style: none; padding: 0; margin: 0; }
+  .kill-list li { padding: 8px 0 8px 22px; position: relative; font-size: 12px;
+    color: var(--ink-dim); border-bottom: 1px solid var(--edge-soft); }
+  .kill-list li::before { content: "x"; position: absolute; left: 4px; color: var(--danger);
+    font-family: var(--mono); }
+
+  /* ---- Decision dock -------------------------------------------------*/
+  .decision-dock { padding: 18px; background: var(--panel-2); border-top: 1px solid var(--edge); }
+  .dock-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-family: var(--mono); font-size: 10px; color: var(--ink-faint);
+    text-transform: uppercase; letter-spacing: 0.5px; }
+  select, input[type=text], textarea {
+    background: #0d1117; border: 1px solid var(--edge); color: var(--ink);
+    border-radius: 5px; padding: 8px 10px; font-family: var(--sans); font-size: 13px;
+  }
+  select:focus, input:focus, textarea:focus { outline: none; border-color: var(--signal-dk); }
+  textarea { width: 100%; resize: vertical; min-height: 56px; }
+
+  .flag-warn { margin-top: 13px; padding: 12px 14px; border-radius: 7px;
+    background: rgba(224,163,74,0.08); border: 1px solid rgba(224,163,74,0.35);
+    color: var(--caution); font-size: 13px; display: none; }
+  .flag-warn.show { display: block; }
+  .flag-warn b { display: block; font-family: var(--mono); font-size: 10px;
+    letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px; }
+
+  /* ---- Decision log --------------------------------------------------*/
+  .dlog { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .dlog th { font-family: var(--mono); font-size: 10px; color: var(--ink-faint);
+    text-transform: uppercase; letter-spacing: 0.5px; text-align: left; padding: 9px 12px;
+    border-bottom: 1px solid var(--edge); }
+  .dlog td { padding: 11px 12px; border-bottom: 1px solid var(--edge-soft); vertical-align: top; }
+  .dlog .dt { font-family: var(--mono); }
+  .dlog .buy  { color: var(--good); }
+  .dlog .sell { color: var(--danger); }
+  .dlog .pass, .dlog .watch, .dlog .hold { color: var(--ink-dim); }
+  .dlog .flagcell { color: var(--caution); font-family: var(--mono); font-size: 11px; }
+
+  /* ---- Settings ------------------------------------------------------*/
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 18px; }
+  .set-card { background: var(--panel); border: 1px solid var(--edge); border-radius: 8px; padding: 16px; }
+  .set-card h3 { font-family: var(--mono); font-size: 11px; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--signal); margin: 0 0 14px; }
+  .set-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+  .set-row label { font-family: var(--mono); font-size: 10px; color: var(--ink-faint);
+    text-transform: uppercase; letter-spacing: 0.5px; }
+  .set-row input { background: #0d1117; border: 1px solid var(--edge); color: var(--ink);
+    border-radius: 5px; padding: 7px 9px; font-family: var(--mono); font-size: 12px; }
+  .save-bar { position: sticky; bottom: 0; margin-top: 18px; padding: 14px 0;
+    display: flex; gap: 12px; align-items: center; }
+  .save-note { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--panel-2); border: 1px solid var(--signal-dk); color: var(--ink);
+    padding: 12px 20px; border-radius: 8px; font-family: var(--mono); font-size: 12px;
+    opacity: 0; transition: all 0.25s; pointer-events: none; z-index: 50; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--edge);
+    border-top-color: var(--signal); border-radius: 50%; animation: sp 0.7s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>HORIZON SCANNER</h1>
+    <span class="sweep">// signal sweep</span>
+  </div>
+  <div class="statline" id="statline"></div>
+</header>
+
+<nav class="tabs">
+  <button class="active" data-view="theses">Theses</button>
+  <button data-view="decisions">Decision Log</button>
+  <button data-view="settings">Settings</button>
+</nav>
+
+<main>
+  <!-- THESES VIEW -->
+  <div class="view active" id="view-theses">
+    <div class="grid-2">
+      <div class="panel" style="align-self:start">
+        <div class="panel-head">
+          <span>Clusters</span>
+          <span id="cluster-count" style="color:var(--ink-faint)"></span>
+        </div>
+        <div class="filter-wrap">
+          <input type="text" id="cluster-filter" placeholder="Filter by theme, ticker, or company..." spellcheck="false" autocomplete="off">
+          <button id="filter-clear" title="Clear">&times;</button>
+        </div>
+        <div class="panel-body" id="cluster-list">
+          <div class="empty">Loading clusters...</div>
+        </div>
+      </div>
+
+      <div class="panel" id="thesis-panel">
+        <div class="empty">Select a cluster to view its thesis, or run a new one.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DECISIONS VIEW -->
+  <div class="view" id="view-decisions">
+    <div class="panel">
+      <div class="panel-head"><span>Decision Log</span>
+        <span style="color:var(--ink-faint)">buy / hold / sell / pass with emotional flagging</span></div>
+      <div id="decision-log"><div class="empty">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- SETTINGS VIEW -->
+  <div class="view" id="view-settings">
+    <div id="settings-body"><div class="empty">Loading settings...</div></div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+<datalist id="model-options"></datalist>
+
+<script>
+// =====================================================================
+//  Horizon Scanner dashboard - vanilla JS, no framework.
+//  Talks to the stdlib server's JSON API. State kept in module-level vars.
+// =====================================================================
+
+const State = {
+  clusters: [],
+  theses: [],
+  selectedClusterId: null,
+  selectedThesis: null,
+  modelSuggestions: [],
+  config: {},
+  pollTimer: null,
+  filterText: "",
+};
+
+const $ = (sel, root=document) => root.querySelector(sel);
+const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
+
+function toast(msg, ms=2600){
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._t); t._t = setTimeout(()=>t.classList.remove("show"), ms);
+}
+function esc(s){ return (s==null?"":String(s)).replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  if(!r.ok){ const e = await r.json().catch(()=>({error:r.statusText})); throw new Error(e.error||r.statusText); }
+  return r.json();
+}
+
+// ---- Tabs -----------------------------------------------------------
+$$("nav.tabs button").forEach(b => b.onclick = () => {
+  $$("nav.tabs button").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  $$(".view").forEach(v => v.classList.remove("active"));
+  $("#view-" + b.dataset.view).classList.add("active");
+  if(b.dataset.view === "decisions") loadDecisions();
+  if(b.dataset.view === "settings") loadSettings();
+});
+
+// ---- Stats line -----------------------------------------------------
+async function loadStats(){
+  try {
+    const s = await api("/api/stats");
+    $("#statline").innerHTML =
+      `signals <b>${s.signals.total}</b> &nbsp; clusters <b>${s.clusters.total}</b> &nbsp; ` +
+      `theses <b>${s.theses.total}</b> &nbsp; decisions <b>${s.decisions.total}</b>` +
+      (s.decisions.emotional_flags ? ` &nbsp; <span class="flag">flags ${s.decisions.emotional_flags}</span>` : "");
+  } catch(e){ /* stats are non-critical */ }
+}
+
+// ---- Clusters -------------------------------------------------------
+async function loadClusters(){
+  const data = await api("/api/clusters");
+  State.clusters = data.clusters;
+  const ready = data.clusters.filter(c => c.ready).length;
+  $("#cluster-count").textContent = `${data.clusters.length} total / ${ready} ready`;
+  renderClusters();
+}
+
+// Build a lowercase searchable blob for a cluster: its theme plus every
+// ticker and company name from any thesis built on it.
+function clusterSearchBlob(c){
+  let parts = [c.theme || ""];
+  const theses = State.theses.filter(t => t.cluster_id === c.id);
+  theses.forEach(t => {
+    parts.push(t.title || "", t.bottleneck_entity || "", t.bottleneck_ticker || "");
+    ["entities_ring1","entities_ring2","entities_ring3","entities_ring4"].forEach(ring => {
+      (t[ring] || []).forEach(e => parts.push(e.ticker || "", e.company || ""));
+    });
+  });
+  return parts.join(" ").toLowerCase();
+}
+
+function visibleClusters(){
+  const q = State.filterText.trim().toLowerCase();
+  if(!q) return State.clusters;
+  return State.clusters.filter(c => clusterSearchBlob(c).includes(q));
+}
+
+function renderClusters(){
+  const list = $("#cluster-list");
+  const clusters = visibleClusters();
+  const q = State.filterText.trim();
+
+  if(!State.clusters.length){
+    list.innerHTML = `<div class="empty">No clusters yet. Run the collector and classifier first.</div>`;
+    return;
+  }
+  if(!clusters.length){
+    list.innerHTML = `<div class="empty">No clusters match "<span class="filter-hit">${esc(q)}</span>".</div>`;
+    return;
+  }
+  list.innerHTML = clusters.map(c => {
+    const cls = ["cluster"];
+    if(c.ready) cls.push("ready");
+    if(c.id === State.selectedClusterId) cls.push("sel");
+    const pill = c.escalated
+      ? `<span class="pill done">thesis</span>`
+      : (c.ready ? `<span class="pill ready">ready</span>` : "");
+    return `<div class="${cls.join(' ')}" data-id="${c.id}" data-theme="${esc(c.theme)}" data-escalated="${c.escalated}" data-thesis="${c.thesis_id||''}">
+      <div class="count">${c.signal_count}</div>
+      <div class="cluster-meta">
+        <div class="cluster-theme">${esc(c.theme)}</div>
+        <div class="cluster-sub">${c.id.slice(0,8)} ${pill}</div>
+      </div>
+    </div>`;
+  }).join("");
+
+  $$(".cluster", list).forEach(el => el.onclick = () => selectCluster(el.dataset));
+}
+
+async function selectCluster(ds){
+  State.selectedClusterId = ds.id;
+  renderClusters();
+  // If this cluster already has a thesis, show it. Otherwise show a run prompt.
+  if(ds.escalated === "true" && ds.thesis){
+    const t = State.theses.find(x => x.id === ds.thesis) || State.theses.find(x => x.cluster_id === ds.id);
+    if(t){ renderThesis(t); return; }
+  }
+  const existing = State.theses.find(x => x.cluster_id === ds.id);
+  if(existing){ renderThesis(existing); return; }
+  renderRunPrompt(ds.id, ds.theme);
+}
+
+function renderRunPrompt(clusterId, theme){
+  $("#thesis-panel").innerHTML = `
+    <div class="panel-head"><span>Thesis</span></div>
+    <div class="empty">
+      <div style="font-size:14px;color:var(--ink);margin-bottom:6px">${esc(theme)}</div>
+      <div style="margin-bottom:20px">No thesis generated yet for this cluster.</div>
+      <button class="act" id="run-btn">Run 8-step thesis loop</button>
+      <div style="margin-top:14px;font-size:11px;color:var(--ink-faint)">~2-4 min, ~15 API calls, ~$0.55-0.90</div>
+    </div>`;
+  $("#run-btn").onclick = () => runThesis(clusterId, theme);
+}
+
+// ---- Run thesis (background job + poll) -----------------------------
+async function runThesis(clusterId, theme){
+  $("#thesis-panel").innerHTML = `
+    <div class="panel-head"><span>Thesis</span></div>
+    <div class="empty">
+      <div class="spin" style="margin-bottom:14px"></div>
+      <div style="color:var(--ink)">Running thesis loop for<br><b>${esc(theme)}</b></div>
+      <div id="job-step" style="margin-top:14px;font-family:var(--mono);font-size:11px;color:var(--signal)">starting...</div>
+    </div>`;
+  try {
+    const { job_id } = await api("/api/thesis/run", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ cluster_id: clusterId, theme })
+    });
+    pollJob(job_id, theme);
+  } catch(e){ toast("Run failed: " + e.message); renderRunPrompt(clusterId, theme); }
+}
+
+function pollJob(jobId, theme){
+  clearInterval(State.pollTimer);
+  let dots = 0;
+  State.pollTimer = setInterval(async () => {
+    try {
+      const { jobs } = await api("/api/jobs");
+      const j = jobs.find(x => x.job_id === jobId);
+      if(!j) return;
+      const stepEl = $("#job-step");
+      if(j.status === "running" && stepEl){
+        dots = (dots+1)%4;
+        stepEl.textContent = "synthesizing" + ".".repeat(dots);
+      }
+      if(j.status === "done"){
+        clearInterval(State.pollTimer);
+        await loadTheses(); await loadClusters(); await loadStats();
+        const t = State.theses.find(x => x.id === j.thesis_id);
+        if(t) renderThesis(t);
+        toast("Thesis complete");
+      }
+      if(j.status === "error"){
+        clearInterval(State.pollTimer);
+        toast("Thesis failed: " + (j.error||"unknown"));
+        const c = State.clusters.find(x => x.id === j.cluster_id);
+        renderRunPrompt(j.cluster_id, theme);
+      }
+    } catch(e){ /* keep polling */ }
+  }, 1500);
+}
+
+// ---- Theses ---------------------------------------------------------
+async function loadTheses(){
+  const data = await api("/api/theses");
+  State.theses = data.theses;
+}
+
+function scoreColor(n){
+  if(n >= 70) return "var(--good)";
+  if(n >= 45) return "var(--signal)";
+  if(n >= 25) return "var(--caution)";
+  return "var(--danger)";
+}
+
+function renderThesis(t){
+  State.selectedThesis = t;
+  const q = t.thesis_quality_score ?? 0;
+  const b = t.buy_now_score ?? 0;
+  const riskClass = "risk-" + (t.risk_profile||"").split(" ")[0];
+
+  const scenarios = (t.scenarios||[]).map(s => {
+    const lab = (s.label||"").toLowerCase();
+    let cls = "base";
+    if(lab.includes("bull")) cls="bull"; else if(lab.includes("bear")) cls="bear";
+    else if(lab.includes("black")) cls="black";
+    const pct = s.probability!=null ? Math.round(s.probability*100)+"%" : "";
+    return `<div class="scn ${cls}">
+      <div class="lab"><span>${esc(s.label)}</span><span class="prob">${pct} / ${esc(s.timeline_years||"?")}y</span></div>
+      <div class="desc">${esc(s.description)}</div>
+      <div class="impl">${esc(s.investment_implication||"")}</div>
+    </div>`;
+  }).join("");
+
+  const ringTable = (rows, label) => {
+    if(!rows || !rows.length) return "";
+    return `<div class="ring-label">${label}</div><table class="ents">` +
+      rows.map(e => `<tr>
+        <td class="tk">${esc(e.ticker||"-")}</td>
+        <td class="co">${esc(e.company||"")}</td>
+        <td class="rl">${esc(e.role||"")}</td></tr>`).join("") +
+      `</table>`;
+  };
+
+  const kills = (t.kill_criteria||[]).map(k => `<li>${esc(k)}</li>`).join("");
+
+  $("#thesis-panel").innerHTML = `
+    <div class="thesis-head">
+      <div class="thesis-theme">${esc(t.theme)}</div>
+      <h2 class="thesis-title">${esc(t.title||t.theme)}</h2>
+      <div class="scores">
+        <div class="score-card">
+          <div class="score-num" style="color:${scoreColor(q)}">${q}</div>
+          <div class="score-lab">Thesis Quality</div>
+          <div class="bar"><div style="width:${q}%;background:${scoreColor(q)}"></div></div>
+        </div>
+        <div class="score-card">
+          <div class="score-num" style="color:${scoreColor(b)}">${b}</div>
+          <div class="score-lab">Buy Now</div>
+          <div class="bar"><div style="width:${b}%;background:${scoreColor(b)}"></div></div>
+        </div>
+        <div class="score-card">
+          <div class="score-num" style="font-size:15px;color:var(--ink);padding-top:5px">TRL ${esc(t.technology_trl??"?")}</div>
+          <div class="score-lab">Maturity</div>
+          <div class="score-lab" style="margin-top:8px;color:var(--ink-dim)">${esc(t.timeline_years_low??"?")}-${esc(t.timeline_years_high??"?")} yrs</div>
+        </div>
+      </div>
+      <div class="badges">
+        <span class="badge ${riskClass}">Risk ${esc(t.risk_profile||"?")}</span>
+        <span class="badge conf">${esc(t.confidence_rating||"?")}</span>
+        <span class="badge">${esc(t.company_type||"?")}</span>
+        <span class="badge">State ${esc(t.state||"?")}</span>
+      </div>
+    </div>
+
+    <section class="block">
+      <h3>Bottleneck Map</h3>
+      <div class="ringwrap">
+        ${ringSVG(t)}
+        <div class="ring-legend" id="ring-legend"></div>
+      </div>
+    </section>
+
+    <section class="block">
+      <h3>Scenario Tree</h3>
+      <div class="scenarios">${scenarios || '<div class="empty">No scenarios.</div>'}</div>
+    </section>
+
+    <section class="block">
+      <h3>Entity Rings</h3>
+      ${ringTable(t.entities_ring1, "Ring 1 - Direct")}
+      ${ringTable(t.entities_ring2, "Ring 2 - Enabling")}
+      ${ringTable(t.entities_ring3, "Ring 3 - Benefiting")}
+      ${ringTable(t.entities_ring4, "Ring 4 - Threatened")}
+    </section>
+
+    <section class="block">
+      <h3>Adversarial Verdict</h3>
+      <div class="bear-box">
+        <div class="verdict">Bear case</div>
+        <div style="font-size:13px;color:var(--ink-dim)">${esc(t.adversarial_summary||"No adversarial summary.")}</div>
+      </div>
+      <h3 style="margin-top:18px">Kill Criteria</h3>
+      <ul class="kill-list">${kills || '<li style="padding-left:4px">None recorded.</li>'}</ul>
+    </section>
+
+    ${decisionDock(t)}
+  `;
+
+  drawLegend(t);
+  wireDecisionDock(t);
+}
+
+// ---- Bottleneck ring SVG -------------------------------------------
+function ringSVG(t){
+  const cx=130, cy=130;
+  const rings = [
+    {r:34,  color:"var(--signal)",  rows:t.entities_ring1, name:"Direct"},
+    {r:62,  color:"var(--good)",    rows:t.entities_ring2, name:"Enabling"},
+    {r:90,  color:"var(--violet)",  rows:t.entities_ring3, name:"Benefiting"},
+    {r:116, color:"var(--danger)",  rows:t.entities_ring4, name:"Threatened"},
+  ];
+  let circles = rings.map(rg =>
+    `<circle cx="${cx}" cy="${cy}" r="${rg.r}" fill="none" stroke="${rg.color}" stroke-opacity="0.5" stroke-width="1.2"/>`
+  ).join("");
+
+  // place ticker chips around each ring
+  let chips = "";
+  rings.forEach(rg => {
+    const rows = (rg.rows||[]).slice(0,4);
+    rows.forEach((e, i) => {
+      const ang = (-90 + (360/Math.max(rows.length,1))*i) * Math.PI/180;
+      const x = cx + rg.r*Math.cos(ang);
+      const y = cy + rg.r*Math.sin(ang);
+      const tk = (e.ticker && e.ticker!=="null") ? e.ticker : (e.company||"").slice(0,4);
+      chips += `<circle cx="${x}" cy="${y}" r="3" fill="${rg.color}"/>
+        <text x="${x}" y="${y-7}" fill="var(--ink-dim)" font-size="8" font-family="ui-monospace, monospace"
+          text-anchor="middle">${esc(tk)}</text>`;
+    });
+  });
+
+  // center: bottleneck company
+  const bn = esc(t.bottleneck_ticker && t.bottleneck_ticker!=="null" ? t.bottleneck_ticker : (t.bottleneck_entity||"?"));
+  const center = `<circle cx="${cx}" cy="${cy}" r="20" fill="#11161d" stroke="var(--caution)" stroke-width="1.5"/>
+    <text x="${cx}" y="${cy-1}" fill="var(--caution)" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">${bn}</text>
+    <text x="${cx}" y="${cy+9}" fill="var(--ink-faint)" font-size="6" font-family="ui-monospace, monospace" text-anchor="middle">BOTTLENECK</text>`;
+
+  return `<svg viewBox="0 0 260 260" width="100%" style="max-width:300px">
+    ${circles}${chips}${center}</svg>`;
+}
+
+function drawLegend(t){
+  const items = [
+    {c:"var(--signal)", n:"Ring 1 Direct",    rows:t.entities_ring1},
+    {c:"var(--good)",   n:"Ring 2 Enabling",  rows:t.entities_ring2},
+    {c:"var(--violet)", n:"Ring 3 Benefiting",rows:t.entities_ring3},
+    {c:"var(--danger)", n:"Ring 4 Threatened",rows:t.entities_ring4},
+  ];
+  $("#ring-legend").innerHTML = items.map(it =>
+    `<div class="row"><span class="dot" style="background:${it.c}"></span>
+     <span class="lab"><b>${it.n}</b> &mdash; ${(it.rows||[]).length} co.</span></div>`
+  ).join("") +
+  `<div class="row" style="margin-top:10px"><span class="dot" style="background:var(--caution)"></span>
+   <span class="lab"><b>Bottleneck</b> &mdash; ${esc(t.bottleneck_entity||"?")}</span></div>`;
+}
+
+// ---- Decision dock --------------------------------------------------
+function decisionDock(t){
+  const ring1 = t.entities_ring1 || [];
+  const tickers = [...new Set([
+    t.bottleneck_ticker,
+    ...ring1.map(e=>e.ticker)
+  ].filter(x => x && x!=="null"))];
+  const tkOpts = tickers.map(tk => `<option value="${esc(tk)}">${esc(tk)}</option>`).join("");
+
+  return `<div class="decision-dock">
+    <h3 style="font-family:var(--mono);font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--ink-dim);margin:0 0 14px">Log a Decision</h3>
+    <div class="dock-row">
+      <div class="field"><label>Action</label>
+        <select id="d-type">
+          <option>BUY</option><option>HOLD</option><option>SELL</option>
+          <option>PASS</option><option>WATCH</option>
+        </select></div>
+      <div class="field"><label>Ticker</label>
+        <select id="d-ticker"><option value="">-</option>${tkOpts}</select></div>
+      <div class="field" style="flex:1;min-width:200px"><label>Reasoning</label>
+        <input type="text" id="d-reason" placeholder="Why are you making this call?"></div>
+    </div>
+    <div class="flag-warn" id="flag-warn"></div>
+    <div style="margin-top:13px;display:flex;gap:10px">
+      <button class="act" id="d-log">Log decision</button>
+      <button class="ghost" id="d-check">Check for flags first</button>
+    </div>
+  </div>`;
+}
+
+function wireDecisionDock(t){
+  const reason = $("#d-reason"), type = $("#d-type"), ticker = $("#d-ticker");
+  const warn = $("#flag-warn");
+
+  async function preview(){
+    const body = { thesis_id:t.id, decision_type:type.value, stated_reason:reason.value };
+    try {
+      const r = await api("/api/decision/preview", {
+        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      if(r.flag){ warn.innerHTML = `<b>Emotional flag</b>${esc(r.reason)}`; warn.classList.add("show"); }
+      else { warn.classList.remove("show"); }
+      return r.flag;
+    } catch(e){ return false; }
+  }
+
+  $("#d-check").onclick = preview;
+  reason.oninput = () => { if(warn.classList.contains("show")) preview(); };
+  type.onchange = preview;
+
+  $("#d-log").onclick = async () => {
+    const body = {
+      thesis_id:t.id, decision_type:type.value, ticker:ticker.value||null,
+      stated_reason:reason.value
+    };
+    try {
+      const r = await api("/api/decision", {
+        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      if(r.emotional_flag){
+        warn.innerHTML = `<b>Logged with emotional flag</b>${esc(r.emotional_reason)}`;
+        warn.classList.add("show");
+        toast("Decision logged - flagged for review");
+      } else {
+        toast("Decision logged");
+        warn.classList.remove("show");
+      }
+      reason.value = "";
+      loadStats();
+    } catch(e){ toast("Log failed: " + e.message); }
+  };
+}
+
+// ---- Decision log view ---------------------------------------------
+async function loadDecisions(){
+  const el = $("#decision-log");
+  try {
+    const { decisions } = await api("/api/decisions");
+    if(!decisions.length){ el.innerHTML = `<div class="empty">No decisions logged yet.</div>`; return; }
+    el.innerHTML = `<table class="dlog"><thead><tr>
+      <th>When</th><th>Action</th><th>Ticker</th><th>Reasoning</th><th>Flag</th></tr></thead><tbody>` +
+      decisions.map(d => {
+        const dt = (d.created_at||"").replace("T"," ").slice(0,16);
+        const cls = (d.decision_type||"").toLowerCase();
+        return `<tr>
+          <td class="dt">${esc(dt)}</td>
+          <td class="${cls}" style="font-family:var(--mono)">${esc(d.decision_type)}</td>
+          <td class="dt" style="color:var(--signal)">${esc(d.ticker||"-")}</td>
+          <td style="color:var(--ink-dim)">${esc(d.stated_reason||"")}</td>
+          <td class="flagcell">${d.emotional_flag ? "FLAGGED" : ""}</td>
+        </tr>` +
+        (d.emotional_flag && d.emotional_reason ?
+          `<tr><td></td><td colspan="4" style="color:var(--caution);font-size:11px;padding-top:0">${esc(d.emotional_reason)}</td></tr>` : "");
+      }).join("") + `</tbody></table>`;
+  } catch(e){ el.innerHTML = `<div class="empty">Failed to load: ${esc(e.message)}</div>`; }
+}
+
+// ---- Settings -------------------------------------------------------
+async function loadSettings(){
+  const el = $("#settings-body");
+  try {
+    const data = await api("/api/config");
+    State.config = data.config;
+    State.modelSuggestions = data.model_suggestions || [];
+    $("#model-options").innerHTML = State.modelSuggestions.map(m => `<option value="${esc(m)}">`).join("");
+    el.innerHTML = renderSettings(data.config);
+    wireSettings();
+  } catch(e){ el.innerHTML = `<div class="empty">Failed to load settings: ${esc(e.message)}</div>`; }
+}
+
+function modelInput(id, val){
+  return `<input list="model-options" id="${id}" value="${esc(val||"")}" spellcheck="false">`;
+}
+function numInput(id, val){ return `<input type="text" inputmode="numeric" id="${id}" value="${esc(val??"")}">`; }
+
+function renderSettings(c){
+  const th = c.thesis||{}, cl = c.classifier||{}, co = c.collectors||{};
+  const smt = th.step_max_tokens||{}, sm = th.step_models||{};
+  const steps = ["step1_context","step2_viability","step3_bottleneck","step4_scenarios",
+                 "step5_entities","step6_platform","step7_adversarial","step8_scoring"];
+
+  const tokenRows = steps.map(s => `<div class="set-row">
+    <label>${s.replace("step","step ").replace("_"," - ")} &mdash; max tokens</label>
+    ${numInput("smt_"+s, smt[s])}</div>`).join("");
+
+  const modelRows = steps.map(s => `<div class="set-row">
+    <label>${s.replace("step","step ").replace("_"," - ")} &mdash; model override</label>
+    ${modelInput("sm_"+s, sm[s])}</div>`).join("");
+
+  return `<div class="settings-grid">
+    <div class="set-card">
+      <h3>Models</h3>
+      <div class="set-row"><label>Default step model</label>${modelInput("th_step_model", th.step_model)}</div>
+      <div class="set-row"><label>Adversarial model (step 7)</label>${modelInput("th_adv_model", th.adversarial_model)}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin:14px 0 8px;text-transform:uppercase;letter-spacing:0.5px">Per-step overrides (blank = use default)</div>
+      ${modelRows}
+    </div>
+
+    <div class="set-card">
+      <h3>Tokens per step</h3>
+      ${tokenRows}
+    </div>
+
+    <div class="set-card">
+      <h3>Context &amp; Search</h3>
+      <div class="set-row"><label>Max signals in context</label>${numInput("th_max_signals", th.max_signals_in_context)}</div>
+      <div class="set-row"><label>Signal abstract chars</label>${numInput("th_abstract_chars", th.signal_abstract_chars)}</div>
+      <div class="set-row"><label>Context doc max chars</label>${numInput("th_ctx_chars", th.context_doc_max_chars)}</div>
+      <div class="set-row"><label>Web search max tokens</label>${numInput("th_web_tokens", th.web_search_max_tokens)}</div>
+      <div class="set-row"><label>Perplexity model</label><input id="th_perplexity" value="${esc(th.perplexity_model||"")}" spellcheck="false"></div>
+      <div class="set-row"><label>Step timeout (seconds, 0=off)</label>${numInput("th_timeout", th.step_timeout_seconds)}</div>
+    </div>
+
+    <div class="set-card">
+      <h3>Classifier</h3>
+      <div class="set-row"><label>Triage model</label>${modelInput("cl_model", cl.model)}</div>
+      <div class="set-row"><label>Fallback model</label>${modelInput("cl_fallback", cl.fallback_model)}</div>
+      <div class="set-row"><label>Confidence threshold</label>${numInput("cl_conf", cl.confidence_threshold)}</div>
+      <div class="set-row"><label>Dedup similarity threshold</label>${numInput("cl_dedup", cl.dedup_similarity_threshold)}</div>
+      <div class="set-row"><label>Cluster escalation threshold</label>${numInput("cl_escal", cl.cluster_escalation_threshold)}</div>
+    </div>
+
+    <div class="set-card">
+      <h3>Collectors</h3>
+      <div class="set-row"><label>arXiv max results / run</label>${numInput("co_arxiv_max", (co.arxiv||{}).max_results_per_run)}</div>
+      <div class="set-row"><label>Reddit post limit</label>${numInput("co_reddit_limit", (co.reddit||{}).post_limit)}</div>
+      <div class="set-row"><label>Reddit min score</label>${numInput("co_reddit_score", (co.reddit||{}).min_score)}</div>
+      <div class="set-row"><label>Trends geo</label><input id="co_trends_geo" value="${esc((co.google_trends||{}).geo||"")}"></div>
+    </div>
+  </div>
+
+  <div class="save-bar">
+    <button class="act" id="set-save">Save settings</button>
+    <span class="save-note">Changes take effect on the next thesis run.</span>
+  </div>`;
+}
+
+function numOrNull(v){
+  if(v==null || v==="") return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? v : n;
+}
+function strOrNull(v){ return (v==null || v.trim()==="") ? null : v.trim(); }
+
+function wireSettings(){
+  $("#set-save").onclick = async () => {
+    const g = id => { const el = $("#"+id); return el ? el.value : undefined; };
+    const steps = ["step1_context","step2_viability","step3_bottleneck","step4_scenarios",
+                   "step5_entities","step6_platform","step7_adversarial","step8_scoring"];
+    const step_max_tokens = {}, step_models = {};
+    steps.forEach(s => {
+      step_max_tokens[s] = numOrNull(g("smt_"+s));
+      step_models[s] = strOrNull(g("sm_"+s));
+    });
+
+    const payload = {
+      thesis: {
+        step_model: strOrNull(g("th_step_model")),
+        adversarial_model: strOrNull(g("th_adv_model")),
+        step_max_tokens, step_models,
+        max_signals_in_context: numOrNull(g("th_max_signals")),
+        signal_abstract_chars: numOrNull(g("th_abstract_chars")),
+        context_doc_max_chars: numOrNull(g("th_ctx_chars")),
+        web_search_max_tokens: numOrNull(g("th_web_tokens")),
+        perplexity_model: strOrNull(g("th_perplexity")),
+        step_timeout_seconds: numOrNull(g("th_timeout")),
+      },
+      classifier: {
+        model: strOrNull(g("cl_model")),
+        fallback_model: strOrNull(g("cl_fallback")),
+        confidence_threshold: numOrNull(g("cl_conf")),
+        dedup_similarity_threshold: numOrNull(g("cl_dedup")),
+        cluster_escalation_threshold: numOrNull(g("cl_escal")),
+      },
+      collectors: {
+        arxiv: { max_results_per_run: numOrNull(g("co_arxiv_max")) },
+        reddit: { post_limit: numOrNull(g("co_reddit_limit")), min_score: numOrNull(g("co_reddit_score")) },
+        google_trends: { geo: strOrNull(g("co_trends_geo")) },
+      },
+    };
+
+    try {
+      const r = await api("/api/config", {
+        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+      toast(r.message || "Settings saved");
+    } catch(e){ toast("Save failed: " + e.message); }
+  };
+}
+
+// ---- Filter wiring --------------------------------------------------
+function wireFilter(){
+  const input = $("#cluster-filter");
+  const clear = $("#filter-clear");
+  input.oninput = () => { State.filterText = input.value; renderClusters(); };
+  clear.onclick = () => { input.value = ""; State.filterText = ""; renderClusters(); input.focus(); };
+}
+
+// ---- Boot -----------------------------------------------------------
+(async function init(){
+  wireFilter();
+  await loadStats();
+  await loadTheses();
+  await loadClusters();
+})();
+</script>
+</body>
+</html>

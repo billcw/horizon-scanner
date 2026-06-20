@@ -1,7 +1,7 @@
 """
 thesis/thesis_loop.py
 
-L3 — 8-step thesis generation loop.
+L3 - 8-step thesis generation loop.
 Takes a signal cluster, runs structured reasoning, produces a scored thesis.
 
 Steps:
@@ -120,6 +120,8 @@ def _parse_json(text: str) -> dict:
         pass
     logger.warning("Could not parse JSON, empty dict. First 200: " + text[:200])
     return {}
+
+
 def _web_search(query: str) -> str:
     """Search via Perplexity Sonar API. Falls back gracefully if key missing."""
     try:
@@ -148,7 +150,7 @@ def _web_search(query: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 1 — Context Assembly
+# Step 1 - Context Assembly
 # ---------------------------------------------------------------------------
 
 def step1_context(state: ThesisState, client) -> ThesisState:
@@ -177,22 +179,22 @@ CURRENT STATE (web search):
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — Technology Viability Assessment
+# Step 2 - Technology Viability Assessment
 # ---------------------------------------------------------------------------
 
-STEP2_SYSTEM = """You are a technology analyst assessing the scientific and commercial viability 
+STEP2_SYSTEM = """You are a technology analyst assessing the scientific and commercial viability
 of an emerging technology. Be rigorous and cite specific evidence from the provided context.
 Return ONLY valid JSON, no preamble."""
 
 STEP2_SCHEMA = """{
   "is_scientifically_plausible": true,
-  "plausibility_reasoning": "...",
+  "plausibility_reasoning": "2-3 sentences max",
   "current_trl": 4,
-  "trl_reasoning": "TRL 1=basic research, 9=proven in production",
+  "trl_reasoning": "TRL 1=basic research, 9=proven in production. 1-2 sentences.",
   "engineering_barriers": ["barrier 1", "barrier 2", "barrier 3"],
   "timeline_years_low": 5,
   "timeline_years_high": 15,
-  "timeline_reasoning": "...",
+  "timeline_reasoning": "1-2 sentences max",
   "key_evidence": ["evidence 1", "evidence 2"]
 }"""
 
@@ -213,7 +215,7 @@ Return JSON matching this schema exactly:
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — Bottleneck Mapping
+# Step 3 - Bottleneck Mapping
 # ---------------------------------------------------------------------------
 
 STEP3_SYSTEM = """You are a supply chain and technology infrastructure analyst.
@@ -221,13 +223,13 @@ Your job is to identify the critical bottlenecks in a technology's path to scale
 and the companies positioned to solve them. Return ONLY valid JSON."""
 
 STEP3_SCHEMA = """{
-  "primary_bottleneck": "the single most critical constraint to scaling",
+  "primary_bottleneck": "single sentence describing the critical constraint",
   "bottleneck_type": "materials|manufacturing|energy|compute|talent|regulatory|capital",
-  "bottleneck_reasoning": "...",
+  "bottleneck_reasoning": "2-3 sentences max",
   "bottleneck_company": "company name most likely to solve this",
   "bottleneck_ticker": "TICKER or null if private",
   "secondary_bottlenecks": ["bottleneck 2", "bottleneck 3"],
-  "ten_x_breaks_first": "if this technology becomes 10x bigger, what fails first and why"
+  "ten_x_breaks_first": "1-2 sentences: what fails first if technology scales 10x"
 }"""
 
 def step3_bottleneck(state: ThesisState, client) -> ThesisState:
@@ -254,7 +256,7 @@ Return JSON matching this schema exactly:
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — Scenario Tree
+# Step 4 - Scenario Tree
 # ---------------------------------------------------------------------------
 
 STEP4_SYSTEM = """You are a scenario planning analyst. Generate plausible future scenarios
@@ -265,35 +267,35 @@ STEP4_SCHEMA = """{
   "scenarios": [
     {
       "label": "Base Case",
-      "description": "most likely outcome given current evidence",
+      "description": "most likely outcome given current evidence (2 sentences max)",
       "conditions": ["condition 1", "condition 2"],
       "probability": 0.50,
       "timeline_years": 8,
-      "investment_implication": "..."
+      "investment_implication": "1 sentence"
     },
     {
       "label": "Bull Case",
-      "description": "accelerated adoption scenario",
+      "description": "accelerated adoption scenario (2 sentences max)",
       "conditions": ["condition 1", "condition 2"],
       "probability": 0.25,
       "timeline_years": 5,
-      "investment_implication": "..."
+      "investment_implication": "1 sentence"
     },
     {
       "label": "Bear Case",
-      "description": "thesis failure scenario",
+      "description": "thesis failure scenario (2 sentences max)",
       "conditions": ["condition 1", "condition 2"],
       "probability": 0.20,
       "timeline_years": 15,
-      "investment_implication": "..."
+      "investment_implication": "1 sentence"
     },
     {
       "label": "Black Swan",
-      "description": "unexpected breakthrough or collapse",
+      "description": "unexpected breakthrough or collapse (2 sentences max)",
       "conditions": ["condition 1"],
       "probability": 0.05,
       "timeline_years": 3,
-      "investment_implication": "..."
+      "investment_implication": "1 sentence"
     }
   ]
 }"""
@@ -320,25 +322,25 @@ Return JSON matching this schema exactly:
 
 
 # ---------------------------------------------------------------------------
-# Step 5 — Entity Mapping (4 Rings)
+# Step 5 - Entity Mapping (4 Rings)
 # ---------------------------------------------------------------------------
 
 STEP5_SYSTEM = """You are an equity research analyst mapping the investment landscape
 around an emerging technology. Identify specific publicly traded companies in each ring.
-Be specific — name real companies with real tickers. Return ONLY valid JSON."""
+Be specific - name real companies with real tickers. Return ONLY valid JSON."""
 
 STEP5_SCHEMA = """{
   "ring1_direct": [
-    {"company": "Company Name", "ticker": "TICK", "role": "what they do in this space", "confidence": 0.9}
+    {"company": "Company Name", "ticker": "TICK", "role": "1 sentence", "confidence": 0.9}
   ],
   "ring2_enabling": [
-    {"company": "Company Name", "ticker": "TICK", "role": "what they supply/enable", "confidence": 0.8}
+    {"company": "Company Name", "ticker": "TICK", "role": "1 sentence", "confidence": 0.8}
   ],
   "ring3_benefiting": [
-    {"company": "Company Name", "ticker": "TICK", "role": "how they benefit indirectly", "confidence": 0.7}
+    {"company": "Company Name", "ticker": "TICK", "role": "1 sentence", "confidence": 0.7}
   ],
   "ring4_threatened": [
-    {"company": "Company Name", "ticker": "TICK", "role": "how they are threatened", "confidence": 0.6}
+    {"company": "Company Name", "ticker": "TICK", "role": "1 sentence", "confidence": 0.6}
   ]
 }"""
 
@@ -365,6 +367,7 @@ Ring definitions:
 - Ring 4 THREATENED: Companies whose business model is displaced if this succeeds
 
 List 2-4 companies per ring. Use null for ticker if company is private.
+Keep role fields to 1 sentence each.
 
 Return JSON matching this schema exactly:
 {STEP5_SCHEMA}"""
@@ -375,7 +378,7 @@ Return JSON matching this schema exactly:
 
 
 # ---------------------------------------------------------------------------
-# Step 6 — Platform / Product Classification
+# Step 6 - Platform / Product Classification
 # ---------------------------------------------------------------------------
 
 STEP6_SYSTEM = """You are a technology moat analyst. Classify each Ring 1 company by
@@ -391,7 +394,7 @@ STEP6_SCHEMA = """{
       "has_developer_ecosystem": true,
       "has_switching_costs": true,
       "has_pricing_power": false,
-      "moat_summary": "one sentence on moat or lack thereof",
+      "moat_summary": "1 sentence",
       "shovel_or_railroad": "selling shovels|leasing land|owning the railroad|souvenir shirts"
     }
   ],
@@ -417,6 +420,7 @@ For each company, assess:
 - Is it building infrastructure others depend on, or a point product?
 - Does it have switching costs, developer ecosystem, pricing power?
 - Is it selling shovels, leasing land, owning the railroad, or selling souvenir shirts?
+Keep moat_summary to 1 sentence per company.
 
 Return JSON matching this schema exactly:
 {STEP6_SCHEMA}"""
@@ -427,25 +431,27 @@ Return JSON matching this schema exactly:
 
 
 # ---------------------------------------------------------------------------
-# Step 7 — Adversarial Challenge
+# Step 7 - Adversarial Challenge
+# FIX: max_tokens raised from 2000 to 3000 to prevent JSON truncation.
+# FIX: Schema field guidance tightened to enforce concise values.
 # ---------------------------------------------------------------------------
 
 STEP7_SYSTEM = """You are a skeptical investment analyst whose job is to find every reason
 why an investment thesis might be WRONG. Be rigorous, specific, and cite historical precedents
-where similar technologies failed. This is not a balanced view — argue the bear case hard.
-Return ONLY valid JSON."""
+where similar technologies failed. This is not a balanced view - argue the bear case hard.
+Return ONLY valid JSON. Keep all string values concise - 1-3 sentences maximum per field."""
 
 STEP7_SCHEMA = """{
-  "strongest_bear_argument": "the single most compelling reason this thesis fails",
-  "historical_precedents": ["technology/company that failed in a similar way"],
-  "contradicting_evidence": ["specific fact that contradicts the bull case"],
-  "overestimated_factors": ["factor the bull case overweights"],
-  "underestimated_risks": ["risk the bull case ignores"],
-  "timeline_risk": "specific reason the timeline estimate might be wrong",
-  "competition_risk": "who could make this thesis obsolete and how",
-  "regulatory_risk": "specific regulatory scenario that kills the thesis",
+  "strongest_bear_argument": "1-2 sentences: the single most compelling reason this thesis fails",
+  "historical_precedents": ["name of failed technology/company and why it failed (1 sentence each)"],
+  "contradicting_evidence": ["specific fact contradicting the bull case (1 sentence each)"],
+  "overestimated_factors": ["factor the bull case overweights (1 sentence each)"],
+  "underestimated_risks": ["risk the bull case ignores (1 sentence each)"],
+  "timeline_risk": "1-2 sentences: specific reason the timeline estimate is too optimistic",
+  "competition_risk": "1-2 sentences: who could make this thesis obsolete and how",
+  "regulatory_risk": "1-2 sentences: specific regulatory scenario that kills the thesis",
   "verdict": "WEAK_THESIS|MODERATE_THESIS|STRONG_THESIS",
-  "verdict_reasoning": "one paragraph summary"
+  "verdict_reasoning": "2-3 sentences: summary of bear case strength"
 }"""
 
 def step7_adversarial(state: ThesisState, client) -> ThesisState:
@@ -457,14 +463,12 @@ def step7_adversarial(state: ThesisState, client) -> ThesisState:
         f"criticisms problems failures risks {state['theme']} why it won't work"
     )
 
-    bull_summary = f"""
-Theme: {state['theme']}
-TRL: {state['viability'].get('current_trl')} — Timeline: {state['viability'].get('timeline_years_low')}-{state['viability'].get('timeline_years_high')} years
+    bull_summary = f"""Theme: {state['theme']}
+TRL: {state['viability'].get('current_trl')} - Timeline: {state['viability'].get('timeline_years_low')}-{state['viability'].get('timeline_years_high')} years
 Bull scenario: {next((s['description'] for s in state['scenarios'] if 'Bull' in s['label']), 'N/A')}
-Key companies: {', '.join([e.get('company','') for e in state['entities'].get('ring1_direct',[])])}
-"""
+Key companies: {', '.join([e.get('company','') for e in state['entities'].get('ring1_direct',[])])}"""
 
-    user = f"""Challenge this investment thesis — argue the bear case:
+    user = f"""Challenge this investment thesis - argue the bear case hard:
 
 THESIS SUMMARY:
 {bull_summary}
@@ -473,18 +477,20 @@ BEAR CASE RESEARCH:
 {search}
 
 Find every reason this is wrong. Be specific. Cite precedents.
+IMPORTANT: Keep all field values concise (1-3 sentences max). Do not write paragraphs inside JSON strings.
 
 Return JSON matching this schema exactly:
 {STEP7_SCHEMA}"""
 
+    # max_tokens raised from 2000 to 3000 to prevent truncation of adversarial JSON
     result = _call_claude(client, STEP7_SYSTEM, user,
-                          model=adv_model, max_tokens=2000)
+                          model=adv_model, max_tokens=3000)
     state["adversarial"] = _parse_json(result)
     return state
 
 
 # ---------------------------------------------------------------------------
-# Step 8 — Scoring & Final Output
+# Step 8 - Scoring & Final Output
 # ---------------------------------------------------------------------------
 
 STEP8_SYSTEM = """You are a senior investment analyst producing a final scored thesis.
@@ -508,10 +514,10 @@ STEP8_SCHEMA = """{
   "confidence_rating": "WATCH",
   "risk_profile": "HIGH",
   "company_type": "ENABLER",
-  "kill_criteria": ["specific measurable fact that would invalidate thesis"],
-  "watch_triggers": ["specific event that would upgrade to CANDIDATE"],
+  "kill_criteria": ["specific measurable fact that invalidates thesis (1 sentence each)"],
+  "watch_triggers": ["specific event that would upgrade to CANDIDATE (1 sentence each)"],
   "holding_period_years": 7,
-  "position_size_suggestion": "small initial — 1-2% max until TRL advances",
+  "position_size_suggestion": "small initial - 1-2% max until TRL advances",
   "one_line_summary": "concise investment thesis summary"
 }"""
 
@@ -596,7 +602,7 @@ def run_thesis_loop(cluster_id: str) -> str:
 
     for step_name, step_fn in steps:
         try:
-            print(f"  → {step_name}...")
+            print(f"  -> {step_name}...")
             state = step_fn(state, client)
         except Exception as e:
             logger.error(f"{step_name} failed: {e}")
@@ -604,7 +610,7 @@ def run_thesis_loop(cluster_id: str) -> str:
             # Continue to next step rather than aborting
 
     # Assemble thesis record
-    scoring  = state["scoring"]
+    scoring   = state["scoring"]
     viability = state["viability"]
 
     thesis = {

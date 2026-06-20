@@ -1,7 +1,7 @@
 """
 dashboard/export.py
 
-Phase 3A - data export layer for the dashboard.
+Phase 3A + L5 -- data export layer for the dashboard.
 
 Reads the existing SQLite database via the database module and shapes rows
 into JSON-friendly payloads for the dashboard API. All JSON-encoded columns
@@ -106,8 +106,21 @@ def get_thesis_dict(thesis_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Decisions
+# Decisions (general log)
 # ---------------------------------------------------------------------------
+
+def _shape_decision(row: dict) -> dict:
+    """Parse and normalise a single decisions row."""
+    d = dict(row)
+    d["emotional_flag"]   = bool(d.get("emotional_flag"))
+    d["outcome_resolved"] = bool(d.get("outcome_resolved"))
+    d["thesis_snapshot"]  = _loads(d.get("thesis_snapshot"), {})
+    # Numeric fields: coerce None to null-safe float/None
+    for col in ("price_at_decision", "price_at_outcome"):
+        val = d.get(col)
+        d[col] = float(val) if val is not None else None
+    return d
+
 
 def decisions_payload() -> dict:
     """Decision history (newest first), with thesis_snapshot parsed."""
@@ -115,13 +128,33 @@ def decisions_payload() -> dict:
         rows = conn.execute(
             "SELECT * FROM decisions ORDER BY created_at DESC"
         ).fetchall()
-    decisions = []
-    for r in rows:
-        d = dict(r)
-        d["emotional_flag"]  = bool(d.get("emotional_flag"))
-        d["thesis_snapshot"] = _loads(d.get("thesis_snapshot"), {})
-        decisions.append(d)
-    return {"decisions": decisions}
+    return {"decisions": [_shape_decision(dict(r)) for r in rows]}
+
+
+# ---------------------------------------------------------------------------
+# L5 Outcomes + patterns
+# ---------------------------------------------------------------------------
+
+def outcomes_payload() -> dict:
+    """
+    All decisions that have outcome data or a post-mortem, plus the
+    pattern-tag aggregate for the Patterns section.
+    Returns:
+      {
+        "decisions": [...],          -- all decisions (for Outcomes tab full list)
+        "with_outcomes": [...],      -- only those with outcome data filled in
+        "pattern_summary": [...],    -- [{pattern_tag, count}, ...]
+      }
+    """
+    all_decisions = [_shape_decision(d) for d in db.get_all_decisions()]
+    with_outcomes = [_shape_decision(d) for d in db.get_decisions_with_outcomes()]
+    pattern_summary = db.get_pattern_summary()
+
+    return {
+        "decisions": all_decisions,
+        "with_outcomes": with_outcomes,
+        "pattern_summary": pattern_summary,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +196,6 @@ def config_payload() -> dict:
     for section, keys in _EDITABLE.items():
         src = cfg.get(section, {})
         if section == "collectors":
-            # Only surface a few tunable collector fields, not the whole tree
             editable["collectors"] = {
                 "arxiv": {
                     "max_results_per_run": src.get("arxiv", {}).get("max_results_per_run"),

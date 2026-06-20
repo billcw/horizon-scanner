@@ -2,7 +2,7 @@
 horizon_scanner/database.py
 
 Single source of truth for all database operations.
-SQLite — portable, no server needed, file lives in data/ folder.
+SQLite -- portable, no server needed, file lives in data/ folder.
 """
 
 import sqlite3
@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Optional
 
 from .config import get_config
+
+
+class DecisionLockedError(Exception):
+    """Raised when an operation is attempted on a resolved (locked) decision."""
+    pass
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -84,7 +89,7 @@ CREATE TABLE IF NOT EXISTS theses (
     resolution_note         TEXT
 );
 
--- Monitoring log (L4 — updates to thesis probability/state)
+-- Monitoring log (L4 -- updates to thesis probability/state)
 CREATE TABLE IF NOT EXISTS monitoring_events (
     id              TEXT PRIMARY KEY,
     thesis_id       TEXT NOT NULL,
@@ -97,21 +102,28 @@ CREATE TABLE IF NOT EXISTS monitoring_events (
     created_at      TEXT NOT NULL
 );
 
--- Decision log (L5 — every human decision, good or bad)
+-- Decision log (L5 -- every human decision, good or bad)
 CREATE TABLE IF NOT EXISTS decisions (
-    id              TEXT PRIMARY KEY,
-    thesis_id       TEXT,
-    ticker          TEXT,
-    decision_type   TEXT NOT NULL,          -- BUY|ADD|TRIM|EXIT|PASS
-    stated_reason   TEXT,
-    emotional_flag  INTEGER DEFAULT 0,      -- 1 if system flagged as emotional
-    emotional_reason TEXT,
-    thesis_snapshot TEXT,                   -- JSON snapshot of thesis at decision time
-    created_at      TEXT NOT NULL,
-    outcome_30d     TEXT,                   -- filled in later
-    outcome_90d     TEXT,
-    outcome_365d    TEXT,
-    pattern_tag     TEXT                    -- Early Seller | FOMO Buyer | etc.
+    id                  TEXT PRIMARY KEY,
+    thesis_id           TEXT,
+    ticker              TEXT,
+    decision_type       TEXT NOT NULL,          -- BUY|ADD|TRIM|EXIT|PASS
+    stated_reason       TEXT,
+    emotional_flag      INTEGER DEFAULT 0,      -- 1 if system flagged as emotional
+    emotional_reason    TEXT,
+    thesis_snapshot     TEXT,                   -- JSON snapshot of thesis at decision time
+    created_at          TEXT NOT NULL,
+    -- L5-A: outcome recording (filled in later by the user)
+    price_at_decision   REAL,                   -- price entered when logging the decision
+    price_at_outcome    REAL,                   -- price entered when recording the outcome
+    outcome_date        TEXT,                   -- ISO date when the outcome was recorded
+    outcome_30d         TEXT,                   -- short free-text note: what happened at 30d
+    outcome_90d         TEXT,
+    outcome_365d        TEXT,
+    outcome_resolved    INTEGER DEFAULT 0,      -- 1 once the user marks this resolved
+    -- L5-B: post-mortem (filled in by AI after outcome is resolved)
+    postmortem_summary  TEXT,                   -- 2-3 sentence AI narrative
+    pattern_tag         TEXT                    -- SOLD_WINNER_EARLY|FOMO_ENTRY_CONFIRMED|etc.
 );
 
 -- Indexes for common queries
@@ -137,6 +149,46 @@ CREATE TABLE IF NOT EXISTS collector_sources (
 );
 """
 
+# ---------------------------------------------------------------------------
+# L5 column migration
+# Run once on startup: adds the new L5-A/B columns to the decisions table
+# if they were created before this version of database.py.
+# ---------------------------------------------------------------------------
+
+_L5_MIGRATIONS = [
+    "ALTER TABLE decisions ADD COLUMN price_at_decision  REAL",
+    "ALTER TABLE decisions ADD COLUMN price_at_outcome   REAL",
+    "ALTER TABLE decisions ADD COLUMN outcome_date       TEXT",
+    "ALTER TABLE decisions ADD COLUMN outcome_resolved   INTEGER DEFAULT 0",
+    "ALTER TABLE decisions ADD COLUMN postmortem_summary TEXT",
+]
+
+# Index on the new column -- created here (after migration) not in SCHEMA,
+# because the column doesn't exist on old databases when SCHEMA runs.
+_L5_POST_MIGRATION_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_decisions_resolved ON decisions(outcome_resolved)",
+]
+
+
+def _run_migrations(conn: sqlite3.Connection):
+    """
+    Apply any missing L5 columns.  SQLite ALTER TABLE ADD COLUMN is
+    idempotent-safe: we catch 'duplicate column name' errors and skip them.
+    Then create any indexes that depend on the new columns.
+    """
+    for stmt in _L5_MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+    # Create indexes that reference L5 columns (must run after columns exist)
+    for stmt in _L5_POST_MIGRATION_SQL:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # already exists
+
 
 # ---------------------------------------------------------------------------
 # Connection helper
@@ -158,6 +210,7 @@ def initialize_database():
     """Create all tables and indexes. Safe to call repeatedly."""
     with get_connection() as conn:
         conn.executescript(SCHEMA)
+        _run_migrations(conn)
     print("Database initialized.")
 
 
@@ -376,6 +429,7 @@ def log_decision(
     emotional_flag: bool = False,
     emotional_reason: str = "",
     pattern_tag: str = "",
+    price_at_decision: float = None,
 ) -> str:
     decision_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -384,12 +438,13 @@ def log_decision(
             """INSERT INTO decisions
                (id, thesis_id, ticker, decision_type, stated_reason,
                 emotional_flag, emotional_reason, thesis_snapshot,
-                created_at, pattern_tag)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                created_at, pattern_tag, price_at_decision)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 decision_id, thesis_id, ticker, decision_type, stated_reason,
                 int(emotional_flag), emotional_reason,
                 json.dumps(thesis_snapshot or {}), now, pattern_tag,
+                price_at_decision,
             ),
         )
     return decision_id
@@ -398,13 +453,171 @@ def log_decision(
 def delete_decision(decision_id: str) -> bool:
     """
     Hard-delete a single decision by id. Returns True if a row was removed.
+    Refuses (raises DecisionLockedError) if the decision is resolved -- a
+    resolved decision is a permanent ledger entry and cannot be deleted.
     """
     with get_connection() as conn:
+        row = conn.execute(
+            "SELECT outcome_resolved FROM decisions WHERE id=?", (decision_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        if row["outcome_resolved"]:
+            raise DecisionLockedError(
+                "This decision is resolved and cannot be deleted."
+            )
         cur = conn.execute(
             "DELETE FROM decisions WHERE id=?", (decision_id,)
         )
         return cur.rowcount > 0
 
+
+# ---------------------------------------------------------------------------
+# L5-A: Outcome recording
+# ---------------------------------------------------------------------------
+
+def record_outcome(
+    decision_id: str,
+    price_at_outcome: float = None,
+    outcome_30d: str = "",
+    outcome_90d: str = "",
+    outcome_365d: str = "",
+    outcome_date: str = None,
+    resolved: bool = False,
+) -> bool:
+    """
+    Update a decision with outcome data.  Call with resolved=True when the
+    user wants to lock the record and trigger a post-mortem job.
+    Returns True if a row was updated.
+
+    Refuses (raises DecisionLockedError) if the decision is ALREADY resolved.
+    Once resolved, a decision is a permanent, immutable ledger entry.
+    """
+    now = outcome_date or datetime.now(timezone.utc).isoformat()
+    with get_connection() as conn:
+        existing = conn.execute(
+            "SELECT outcome_resolved FROM decisions WHERE id=?", (decision_id,)
+        ).fetchone()
+        if existing is None:
+            return False
+        if existing["outcome_resolved"]:
+            raise DecisionLockedError(
+                "This decision is resolved and locked. No further edits allowed."
+            )
+        cur = conn.execute(
+            """UPDATE decisions
+               SET price_at_outcome = ?,
+                   outcome_30d      = ?,
+                   outcome_90d      = ?,
+                   outcome_365d     = ?,
+                   outcome_date     = ?,
+                   outcome_resolved = ?
+               WHERE id = ?""",
+            (
+                price_at_outcome,
+                outcome_30d or "",
+                outcome_90d or "",
+                outcome_365d or "",
+                now,
+                int(bool(resolved)),
+                decision_id,
+            ),
+        )
+        return cur.rowcount > 0
+
+
+def get_decision_by_id(decision_id: str) -> Optional[dict]:
+    """Return a single decision row as a dict, or None."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM decisions WHERE id=?", (decision_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_decisions_with_outcomes() -> list:
+    """
+    All decisions that have at least one outcome field filled in,
+    newest first.  Used by the Outcomes tab.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM decisions
+               WHERE outcome_30d IS NOT NULL
+                  OR outcome_90d IS NOT NULL
+                  OR outcome_365d IS NOT NULL
+                  OR price_at_outcome IS NOT NULL
+               ORDER BY created_at DESC"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_all_decisions() -> list:
+    """All decisions, newest first."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM decisions ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# L5-B: Post-mortem storage
+# ---------------------------------------------------------------------------
+
+def save_postmortem(
+    decision_id: str,
+    postmortem_summary: str,
+    pattern_tag: str,
+) -> bool:
+    """
+    Write the AI post-mortem back to the decision row.
+    Returns True if a row was updated.
+
+    Allowed ONLY the one time: when the decision is resolved but no
+    post-mortem summary has been written yet.  This is the single write that
+    completes a resolved record.  Once postmortem_summary is populated, the
+    row is fully locked and this raises DecisionLockedError.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT outcome_resolved, postmortem_summary
+               FROM decisions WHERE id=?""",
+            (decision_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        # The post-mortem may only be written on a resolved row that does not
+        # yet have a summary.  Re-running a completed post-mortem is blocked.
+        existing_summary = (row["postmortem_summary"] or "").strip()
+        if existing_summary:
+            raise DecisionLockedError(
+                "This decision already has a post-mortem and is locked."
+            )
+        cur = conn.execute(
+            """UPDATE decisions
+               SET postmortem_summary = ?,
+                   pattern_tag        = ?
+               WHERE id = ?""",
+            (postmortem_summary, pattern_tag, decision_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_pattern_summary() -> list:
+    """
+    Aggregate pattern_tag counts across all decisions that have one.
+    Returns list of {pattern_tag, count} dicts, most common first.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT pattern_tag, COUNT(*) as count
+               FROM decisions
+               WHERE pattern_tag IS NOT NULL AND pattern_tag != ''
+               GROUP BY pattern_tag
+               ORDER BY count DESC"""
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -423,12 +636,21 @@ def get_stats() -> dict:
         candidate        = conn.execute("SELECT COUNT(*) FROM theses WHERE state='CANDIDATE'").fetchone()[0]
         total_decisions  = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
         emotional_sells  = conn.execute("SELECT COUNT(*) FROM decisions WHERE emotional_flag=1").fetchone()[0]
+        resolved         = conn.execute("SELECT COUNT(*) FROM decisions WHERE outcome_resolved=1").fetchone()[0]
+        postmortems      = conn.execute(
+            "SELECT COUNT(*) FROM decisions WHERE postmortem_summary IS NOT NULL AND postmortem_summary != ''"
+        ).fetchone()[0]
 
     return {
-        "signals":         {"total": total_signals, "classified": classified},
-        "clusters":        {"total": total_clusters, "pending": pending_clusters},
-        "theses":          {"total": total_theses, "watch": watch, "building": building, "candidate": candidate},
-        "decisions":       {"total": total_decisions, "emotional_flags": emotional_sells},
+        "signals":   {"total": total_signals, "classified": classified},
+        "clusters":  {"total": total_clusters, "pending": pending_clusters},
+        "theses":    {"total": total_theses, "watch": watch, "building": building, "candidate": candidate},
+        "decisions": {
+            "total": total_decisions,
+            "emotional_flags": emotional_sells,
+            "resolved": resolved,
+            "postmortems": postmortems,
+        },
     }
 
 

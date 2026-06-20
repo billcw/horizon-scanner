@@ -36,7 +36,7 @@ def get_secret(key: str) -> str:
 
 
 def get_anthropic_key() -> str:
-    return get_secret("ANTHROPIC_API_KEY")
+    return get_secret("ANTHR_HORIZON")
 
 
 def get_perplexity_key() -> str:

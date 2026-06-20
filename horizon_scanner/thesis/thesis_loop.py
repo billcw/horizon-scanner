@@ -13,10 +13,15 @@ Steps:
   6. Platform / Product Classification
   7. Adversarial Challenge
   8. Scoring & Output
+
+All tunable parameters (max_tokens per step, models, context limits, timeouts)
+are read from config.yaml so they can be adjusted from the dashboard UI without
+touching this file.
 """
 
 import json
 import logging
+import signal as _signal
 import uuid
 from datetime import datetime, timezone
 from typing import TypedDict, Optional
@@ -33,21 +38,55 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
+
+def _thesis_cfg() -> dict:
+    """Return the thesis section of config, with safe defaults."""
+    return get_config().get("thesis", {})
+
+
+def _step_max_tokens(step_key: str, default: int) -> int:
+    """Look up per-step max_tokens from config, fall back to default."""
+    cfg = _thesis_cfg()
+    return int(cfg.get("step_max_tokens", {}).get(step_key, default))
+
+
+def _step_model(step_key: str) -> str:
+    """
+    Return the model for a given step.
+    Checks step_models[step_key] first; falls back to step_model default.
+    Special case: step7_adversarial also checks adversarial_model for
+    backwards compatibility with existing configs.
+    """
+    cfg = _thesis_cfg()
+    default = cfg.get("step_model", "claude-sonnet-4-6")
+
+    if step_key == "step7_adversarial":
+        default = cfg.get("adversarial_model", default)
+
+    override = cfg.get("step_models", {}).get(step_key)
+    if override:
+        return override
+    return default
+
+
+# ---------------------------------------------------------------------------
 # State object passed between loop steps
 # ---------------------------------------------------------------------------
 
 class ThesisState(TypedDict):
     cluster_id:       str
     theme:            str
-    signals:          list           # raw signal dicts from DB
-    context_doc:      str            # Step 1 output
-    viability:        dict           # Step 2 output
-    bottleneck:       dict           # Step 3 output
-    scenarios:        list           # Step 4 output
-    entities:         dict           # Step 5 output (rings 1-4)
-    platform_class:   dict           # Step 6 output
-    adversarial:      dict           # Step 7 output
-    scoring:          dict           # Step 8 output
+    signals:          list
+    context_doc:      str
+    viability:        dict
+    bottleneck:       dict
+    scenarios:        list
+    entities:         dict
+    platform_class:   dict
+    adversarial:      dict
+    scoring:          dict
     errors:           list
     thesis_id:        Optional[str]
 
@@ -76,18 +115,38 @@ def _get_cluster_signals(cluster_id: str) -> tuple[str, list]:
 
 def _call_claude(client, system: str, user: str, model: str = None,
                  max_tokens: int = 2000) -> str:
-    """Single Claude API call. Returns text content."""
-    cfg = get_config()
+    """Single Claude API call with optional timeout. Returns text content."""
+    cfg = _thesis_cfg()
     if model is None:
-        model = cfg["thesis"]["step_model"]
+        model = cfg.get("step_model", "claude-sonnet-4-6")
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user}]
-    )
-    return response.content[0].text.strip()
+    timeout_secs = cfg.get("step_timeout_seconds", 0)
+
+    def _timeout_handler(signum, frame):
+        raise TimeoutError(f"Claude call exceeded {timeout_secs}s timeout")
+
+    if timeout_secs and timeout_secs > 0:
+        try:
+            _signal.signal(_signal.SIGALRM, _timeout_handler)
+            _signal.alarm(timeout_secs)
+        except (AttributeError, OSError):
+            # SIGALRM not available on Windows - skip timeout
+            timeout_secs = 0
+
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user}]
+        )
+        return response.content[0].text.strip()
+    finally:
+        if timeout_secs and timeout_secs > 0:
+            try:
+                _signal.alarm(0)
+            except (AttributeError, OSError):
+                pass
 
 
 def _parse_json(text: str) -> dict:
@@ -124,6 +183,10 @@ def _parse_json(text: str) -> dict:
 
 def _web_search(query: str) -> str:
     """Search via Perplexity Sonar API. Falls back gracefully if key missing."""
+    cfg = _thesis_cfg()
+    perplexity_model = cfg.get("perplexity_model", "sonar")
+    web_search_max_tokens = int(cfg.get("web_search_max_tokens", 500))
+
     try:
         key = get_perplexity_key()
         headers = {
@@ -131,12 +194,12 @@ def _web_search(query: str) -> str:
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "sonar",
+            "model": perplexity_model,
             "messages": [
                 {"role": "system", "content": "You are a technology research assistant. Be concise and factual."},
                 {"role": "user", "content": query}
             ],
-            "max_tokens": 500
+            "max_tokens": web_search_max_tokens
         }
         resp = requests.post(
             "https://api.perplexity.ai/chat/completions",
@@ -155,20 +218,25 @@ def _web_search(query: str) -> str:
 
 def step1_context(state: ThesisState, client) -> ThesisState:
     logger.info("Step 1: Context Assembly")
+    cfg = _thesis_cfg()
+
+    max_signals    = int(cfg.get("max_signals_in_context", 10))
+    abstract_chars = int(cfg.get("signal_abstract_chars", 500))
+
+    signals = state["signals"][:max_signals]
 
     signals_text = "\n\n".join([
-        f"PAPER: {s['title']}\nABSTRACT: {s['content'][:500]}\nURL: {s['url']}"
-        for s in state["signals"]
+        f"PAPER: {s['title']}\nABSTRACT: {s['content'][:abstract_chars]}\nURL: {s['url']}"
+        for s in signals
     ])
 
-    # Web search for current state of the technology
     search_result = _web_search(
         f"Current state of {state['theme']} technology 2025 2026 commercial progress companies"
     )
 
     context = f"""THESIS TOPIC: {state['theme']}
 
-TRIGGERING SIGNALS ({len(state['signals'])} papers):
+TRIGGERING SIGNALS ({len(signals)} papers):
 {signals_text}
 
 CURRENT STATE (web search):
@@ -200,16 +268,22 @@ STEP2_SCHEMA = """{
 
 def step2_viability(state: ThesisState, client) -> ThesisState:
     logger.info("Step 2: Technology Viability Assessment")
+    cfg = _thesis_cfg()
+    context_chars = int(cfg.get("context_doc_max_chars", 3000))
 
     user = f"""Assess the technology viability for: {state['theme']}
 
 CONTEXT:
-{state['context_doc'][:3000]}
+{state['context_doc'][:context_chars]}
 
 Return JSON matching this schema exactly:
 {STEP2_SCHEMA}"""
 
-    result = _call_claude(client, STEP2_SYSTEM, user, max_tokens=1500)
+    result = _call_claude(
+        client, STEP2_SYSTEM, user,
+        model=_step_model("step2_viability"),
+        max_tokens=_step_max_tokens("step2_viability", 1500)
+    )
     state["viability"] = _parse_json(result)
     return state
 
@@ -234,6 +308,8 @@ STEP3_SCHEMA = """{
 
 def step3_bottleneck(state: ThesisState, client) -> ThesisState:
     logger.info("Step 3: Bottleneck Mapping")
+    cfg = _thesis_cfg()
+    context_chars = int(cfg.get("context_doc_max_chars", 3000))
 
     search = _web_search(
         f"What are the main technical and manufacturing bottlenecks limiting {state['theme']} scalability"
@@ -242,7 +318,7 @@ def step3_bottleneck(state: ThesisState, client) -> ThesisState:
     user = f"""Identify the critical bottlenecks for: {state['theme']}
 
 TECHNOLOGY CONTEXT:
-{state['context_doc'][:2000]}
+{state['context_doc'][:context_chars]}
 
 ADDITIONAL RESEARCH:
 {search}
@@ -250,7 +326,11 @@ ADDITIONAL RESEARCH:
 Return JSON matching this schema exactly:
 {STEP3_SCHEMA}"""
 
-    result = _call_claude(client, STEP3_SYSTEM, user, max_tokens=1000)
+    result = _call_claude(
+        client, STEP3_SYSTEM, user,
+        model=_step_model("step3_bottleneck"),
+        max_tokens=_step_max_tokens("step3_bottleneck", 1000)
+    )
     state["bottleneck"] = _parse_json(result)
     return state
 
@@ -315,7 +395,11 @@ PRIMARY BOTTLENECK: {state['bottleneck'].get('primary_bottleneck')}
 Return JSON matching this schema exactly:
 {STEP4_SCHEMA}"""
 
-    result = _call_claude(client, STEP4_SYSTEM, user, max_tokens=2000)
+    result = _call_claude(
+        client, STEP4_SYSTEM, user,
+        model=_step_model("step4_scenarios"),
+        max_tokens=_step_max_tokens("step4_scenarios", 2000)
+    )
     data = _parse_json(result)
     state["scenarios"] = data.get("scenarios", [])
     return state
@@ -372,7 +456,11 @@ Keep role fields to 1 sentence each.
 Return JSON matching this schema exactly:
 {STEP5_SCHEMA}"""
 
-    result = _call_claude(client, STEP5_SYSTEM, user, max_tokens=2000)
+    result = _call_claude(
+        client, STEP5_SYSTEM, user,
+        model=_step_model("step5_entities"),
+        max_tokens=_step_max_tokens("step5_entities", 2000)
+    )
     state["entities"] = _parse_json(result)
     return state
 
@@ -425,15 +513,19 @@ Keep moat_summary to 1 sentence per company.
 Return JSON matching this schema exactly:
 {STEP6_SCHEMA}"""
 
-    result = _call_claude(client, STEP6_SYSTEM, user, max_tokens=1500)
+    result = _call_claude(
+        client, STEP6_SYSTEM, user,
+        model=_step_model("step6_platform"),
+        max_tokens=_step_max_tokens("step6_platform", 1500)
+    )
     state["platform_class"] = _parse_json(result)
     return state
 
 
 # ---------------------------------------------------------------------------
 # Step 7 - Adversarial Challenge
-# FIX: max_tokens raised from 2000 to 3000 to prevent JSON truncation.
-# FIX: Schema field guidance tightened to enforce concise values.
+# max_tokens default is 3000 to prevent JSON truncation in bear case output.
+# Both the default and the per-step override are read from config.yaml.
 # ---------------------------------------------------------------------------
 
 STEP7_SYSTEM = """You are a skeptical investment analyst whose job is to find every reason
@@ -456,8 +548,6 @@ STEP7_SCHEMA = """{
 
 def step7_adversarial(state: ThesisState, client) -> ThesisState:
     logger.info("Step 7: Adversarial Challenge")
-    cfg = get_config()
-    adv_model = cfg["thesis"].get("adversarial_model", cfg["thesis"]["step_model"])
 
     search = _web_search(
         f"criticisms problems failures risks {state['theme']} why it won't work"
@@ -482,9 +572,11 @@ IMPORTANT: Keep all field values concise (1-3 sentences max). Do not write parag
 Return JSON matching this schema exactly:
 {STEP7_SCHEMA}"""
 
-    # max_tokens raised from 2000 to 3000 to prevent truncation of adversarial JSON
-    result = _call_claude(client, STEP7_SYSTEM, user,
-                          model=adv_model, max_tokens=3000)
+    result = _call_claude(
+        client, STEP7_SYSTEM, user,
+        model=_step_model("step7_adversarial"),
+        max_tokens=_step_max_tokens("step7_adversarial", 3000)
+    )
     state["adversarial"] = _parse_json(result)
     return state
 
@@ -552,7 +644,11 @@ company_type options: INFRASTRUCTURE | ENABLER | CYCLICAL_BENEFICIARY | STORY_ST
 Return JSON matching this schema exactly:
 {STEP8_SCHEMA}"""
 
-    result = _call_claude(client, STEP8_SYSTEM, user, max_tokens=1500)
+    result = _call_claude(
+        client, STEP8_SYSTEM, user,
+        model=_step_model("step8_scoring"),
+        max_tokens=_step_max_tokens("step8_scoring", 1500)
+    )
     state["scoring"] = _parse_json(result)
     return state
 
@@ -561,15 +657,14 @@ Return JSON matching this schema exactly:
 # Main loop runner
 # ---------------------------------------------------------------------------
 
-def run_thesis_loop(cluster_id: str) -> str:
+def run_thesis_loop(cluster_id: str) -> tuple[str, ThesisState]:
     """
     Run the full 8-step thesis loop for a cluster.
-    Returns the thesis_id of the saved thesis.
+    Returns (thesis_id, final_state).
+    All tunable parameters are read from config.yaml at runtime.
     """
-    cfg    = get_config()
     client = anthropic.Anthropic(api_key=get_anthropic_key())
 
-    # Load cluster signals
     theme, signals = _get_cluster_signals(cluster_id)
     logger.info(f"Starting thesis loop for cluster: '{theme}' ({len(signals)} signals)")
 
@@ -607,9 +702,7 @@ def run_thesis_loop(cluster_id: str) -> str:
         except Exception as e:
             logger.error(f"{step_name} failed: {e}")
             state["errors"].append(f"{step_name}: {str(e)}")
-            # Continue to next step rather than aborting
 
-    # Assemble thesis record
     scoring   = state["scoring"]
     viability = state["viability"]
 

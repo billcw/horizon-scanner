@@ -1,6 +1,6 @@
 # =============================================================================
-# HORIZON SCANNER — config.yaml
-# All settings live here. API keys go in .env (never commit .env)
+# HORIZON SCANNER - config.yaml
+# All settings live here. API keys go in environment variables (never in this file).
 # Copy this file to any machine, update paths if needed, and go.
 # =============================================================================
 
@@ -19,7 +19,7 @@ logging:
   path: "logs/horizon_scanner.log"
   level: "INFO"                        # DEBUG | INFO | WARNING | ERROR
 
-# --- Collector schedule (cron-style, but we just read these as labels) --------
+# --- Collector schedule -------------------------------------------------------
 collectors:
   arxiv:
     enabled: true
@@ -32,7 +32,6 @@ collectors:
       - "cond-mat.mtrl-sci"
     max_results_per_run: 100
     schedule: "daily"
-
   google_trends:
     enabled: true
     schedule: "daily"
@@ -48,7 +47,6 @@ collectors:
       - "brain computer interface"
       - "humanoid robot"
       - "photonic computing"
-
   reddit:
     enabled: true
     schedule: "6hourly"
@@ -60,7 +58,6 @@ collectors:
       - "SecurityAnalysis"
     post_limit: 25
     min_score: 50
-
   uspto:
     enabled: true
     schedule: "weekly"
@@ -84,8 +81,46 @@ classifier:
 
 # --- L3 Thesis Loop -----------------------------------------------------------
 thesis:
-  step_model: "claude-sonnet-4-6"          # steps 1-6 and 8
-  adversarial_model: "claude-sonnet-4-6"   # step 7 (upgrade to opus when ready)
+  # Default models (can be overridden per-step below)
+  step_model: "claude-sonnet-4-6"          # default for steps 1-6 and 8
+  adversarial_model: "claude-sonnet-4-6"   # step 7 default (set to opus when ready)
+
+  # Per-step max_tokens
+  # Step 7 needs extra headroom to avoid JSON truncation in the bear case output.
+  # All values tunable from the dashboard Settings panel.
+  step_max_tokens:
+    step1_context:      1000
+    step2_viability:    1500
+    step3_bottleneck:   1000
+    step4_scenarios:    2000
+    step5_entities:     2000
+    step6_platform:     1500
+    step7_adversarial:  3000
+    step8_scoring:      1500
+
+  # Per-step model overrides. Set to null to use the step_model default above.
+  # Example: set step7_adversarial to "claude-opus-4-6" for stronger bear cases.
+  step_models:
+    step1_context:      null
+    step2_viability:    null
+    step3_bottleneck:   null
+    step4_scenarios:    null
+    step5_entities:     null
+    step6_platform:     null
+    step7_adversarial:  null
+    step8_scoring:      null
+
+  # Context assembly controls
+  max_signals_in_context: 10           # max signals fed into Step 1 context doc
+  signal_abstract_chars: 500           # chars per signal abstract in context
+  context_doc_max_chars: 3000          # total chars of context_doc passed to Steps 2+
+
+  # Web search controls
+  web_search_max_tokens: 500           # Perplexity response token cap
+  perplexity_model: "sonar"            # sonar | sonar-pro
+
+  # Safety controls
+  step_timeout_seconds: 90             # per-step hang protection (0 = disabled)
   max_search_calls_per_step: 3
   max_retries_on_missing_citations: 2
   output_dir: "data/exports"
@@ -94,10 +129,10 @@ thesis:
 monitoring:
   model: "claude-haiku-4-5-20251001"
   schedule: "weekly"
-  probability_alert_threshold: 0.15    # alert if probability shifts >15%
+  probability_alert_threshold: 0.15    # alert if scenario probability shifts >15%
   archive_after_days: 180              # archive theses with no new signals
 
-# --- API endpoints (keys in .env) --------------------------------------------
+# --- API endpoints (keys in environment variables, not here) ------------------
 apis:
   anthropic_base: "https://api.anthropic.com"
   perplexity_base: "https://api.perplexity.ai"

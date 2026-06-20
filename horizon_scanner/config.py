@@ -40,7 +40,7 @@ def get_anthropic_key() -> str:
 
 
 def get_perplexity_key() -> str:
-    return get_secret("PERPLEXITY_API_KEY")
+    return get_secret("PERPLEX_HORIZON")
 
 
 def get_reddit_creds() -> dict:

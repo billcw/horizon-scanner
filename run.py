@@ -1,7 +1,7 @@
 """
-run.py — Horizon Scanner entry point
+run.py - Horizon Scanner entry point
 
-Usage (from project root):
+Usage:
   python run.py init
   python run.py collect
   python run.py collect --source arxiv
@@ -9,6 +9,7 @@ Usage (from project root):
   python run.py escalate
   python run.py stats
   python run.py seed --topic "neuromorphic computing"
+  python run.py thesis --cluster <uuid>
   python run.py schedule
 """
 
@@ -17,19 +18,13 @@ import logging
 import os
 import sys
 
-# ── Fix Python path BEFORE any local imports ─────────────────────────────────
-# This makes the project work whether run as "python run.py" or "python -m ..."
-# and regardless of where Python looks for packages.
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-# ─────────────────────────────────────────────────────────────────────────────
 
-# Now local imports will work
 from horizon_scanner.config import get_config
 from horizon_scanner.database import initialize_database, get_stats
 
-# Set up logging
 os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
 
 logging.basicConfig(
@@ -46,18 +41,14 @@ logging.basicConfig(
 logger = logging.getLogger("horizon_scanner")
 
 
-# ── Commands ──────────────────────────────────────────────────────────────────
-
 def cmd_init(args):
-    """Initialize the database."""
     initialize_database()
-    print("\n✓ Database initialized.")
-    print("✓ Next step: copy .env.template to .env and add your ANTHROPIC_API_KEY")
-    print("✓ Then run: python run.py collect\n")
+    print("\n OK Database initialized.")
+    print(" OK Next step: copy .env.template to .env and add your ANTHROPIC_API_KEY")
+    print(" OK Then run: python run.py collect\n")
 
 
 def cmd_collect(args):
-    """Run signal collectors."""
     from horizon_scanner.collectors.arxiv_collector  import run as run_arxiv
     from horizon_scanner.collectors.reddit_collector import run as run_reddit
     from horizon_scanner.collectors.trends_collector import run as run_trends
@@ -77,45 +68,42 @@ def cmd_collect(args):
 
     total = 0
     for name, fn in targets.items():
-        print(f"\n→ Running {name} collector...")
+        print(f"\n-> Running {name} collector...")
         try:
             n = fn()
             total += (n or 0)
             print(f"  {name}: {n or 0} new signals")
         except Exception as e:
-            print(f"  {name}: ERROR — {e}")
+            print(f"  {name}: ERROR - {e}")
             logger.exception(f"Collector error: {name}")
 
-    print(f"\n✓ Collection complete. {total} total new signals.\n")
+    print(f"\n OK Collection complete. {total} total new signals.\n")
 
 
 def cmd_classify(args):
-    """Run the L2 classifier on pending signals."""
     from horizon_scanner.classifier.signal_classifier import run_classifier
-    print("\n→ Running signal classifier...")
+    print("\n-> Running signal classifier...")
     n = run_classifier(batch_size=100)
-    print(f"✓ Classified {n} signals.\n")
+    print(f" OK Classified {n} signals.\n")
 
 
 def cmd_escalate(args):
-    """Check for clusters ready to escalate to L3."""
     from horizon_scanner.classifier.signal_classifier import check_escalations
     ready = check_escalations()
     if not ready:
-        print("\n→ No clusters ready for escalation yet.\n")
+        print("\n-> No clusters ready for escalation yet.\n")
     else:
-        print(f"\n→ {len(ready)} cluster(s) ready for L3 thesis loop:\n")
+        print(f"\n-> {len(ready)} cluster(s) ready for L3 thesis loop:\n")
         for c in ready:
-            print(f"   • [{c['signal_count']} signals] {c['theme']}  (id: {c['id'][:8]}...)")
+            print(f"   * [{c['signal_count']} signals] {c['theme']}  (id: {c['id'][:8]}...)")
         print("\nRun: python run.py thesis --cluster <id>  to generate a thesis.\n")
 
 
 def cmd_stats(args):
-    """Print database statistics."""
     stats = get_stats()
-    print("\n══════════════════════════════════")
-    print("  HORIZON SCANNER — DATABASE STATS")
-    print("══════════════════════════════════")
+    print("\n==================================")
+    print("  HORIZON SCANNER - DATABASE STATS")
+    print("==================================")
     s = stats["signals"]
     print(f"  Signals:    {s['total']} total  |  {s['classified']} classified")
     c = stats["clusters"]
@@ -125,11 +113,10 @@ def cmd_stats(args):
           f"{t['building']} BUILDING  {t['candidate']} CANDIDATE")
     d = stats["decisions"]
     print(f"  Decisions:  {d['total']} logged  |  {d['emotional_flags']} emotional flags")
-    print("══════════════════════════════════\n")
+    print("==================================\n")
 
 
 def cmd_seed(args):
-    """Manually seed a thesis topic without waiting for L2 clustering."""
     import hashlib
     from horizon_scanner.database import (
         insert_signal, update_signal_classification, upsert_cluster
@@ -140,7 +127,7 @@ def cmd_seed(args):
         print("Usage: python run.py seed --topic 'neuromorphic computing'")
         return
 
-    print(f"\n→ Seeding manual thesis topic: '{topic}'")
+    print(f"\n-> Seeding manual thesis topic: '{topic}'")
 
     def make_signal(suffix=""):
         h = hashlib.sha256(f"manual_seed:{topic}:{suffix}".encode()).hexdigest()
@@ -158,16 +145,67 @@ def cmd_seed(args):
 
     ids = [make_signal(), make_signal("2"), make_signal("3")]
     created = [i for i in ids if i]
-    print(f"  ✓ Created {len(created)} signals for topic '{topic}'.")
+    print(f"  OK Created {len(created)} signals for topic '{topic}'.")
     print("  Run: python run.py escalate  to confirm cluster is ready.\n")
 
 
+def cmd_thesis(args):
+    from horizon_scanner.thesis.thesis_loop import run_thesis_loop
+
+    cluster_id = getattr(args, "cluster", None)
+    if not cluster_id:
+        print("Usage: python run.py thesis --cluster <cluster-id>")
+        return
+
+    print(f"\n-> Running 8-step thesis loop for cluster: {cluster_id}")
+    print("  This will take 2-4 minutes and make ~15 API calls.\n")
+
+    try:
+        thesis_id, state = run_thesis_loop(cluster_id)
+        scoring    = state["scoring"]
+        bottleneck = state["bottleneck"]
+        entities   = state["entities"]
+
+        print(f"\n{'='*55}")
+        print(f"  THESIS COMPLETE")
+        print(f"{'='*55}")
+        print(f"  Topic:         {state['theme']}")
+        print(f"  Thesis ID:     {thesis_id[:8]}...")
+        print(f"  Quality Score: {scoring.get('thesis_quality_score')}/100")
+        print(f"  Buy-Now Score: {scoring.get('buy_now_score')}/100")
+        print(f"  Confidence:    {scoring.get('confidence_rating')}")
+        print(f"  Risk Profile:  {scoring.get('risk_profile')}")
+        print(f"\n  ONE-LINE SUMMARY:")
+        print(f"  {scoring.get('one_line_summary')}")
+        print(f"\n  PRIMARY BOTTLENECK:")
+        print(f"  {bottleneck.get('primary_bottleneck')}")
+        print(f"  Bottleneck company: {bottleneck.get('bottleneck_company')} ({bottleneck.get('bottleneck_ticker')})")
+        print(f"\n  RING 1 COMPANIES (Direct):")
+        for e in entities.get("ring1_direct", []):
+            print(f"  - {e.get('company')} ({e.get('ticker')}) - {e.get('role')}")
+        print(f"\n  BEAR VERDICT: {state['adversarial'].get('verdict')}")
+        print(f"  {state['adversarial'].get('strongest_bear_argument')}")
+        print(f"\n  KILL CRITERIA:")
+        for k in scoring.get("kill_criteria", []):
+            print(f"  - {k}")
+        print(f"{'='*55}\n")
+
+        if state["errors"]:
+            print(f"  Warnings ({len(state['errors'])} steps had issues):")
+            for e in state["errors"]:
+                print(f"  ! {e}")
+            print()
+
+    except Exception as e:
+        print(f"\nThesis loop failed: {e}")
+        logger.exception("Thesis loop error")
+
+
 def cmd_schedule(args):
-    """Run collectors on a continuous schedule (daemon mode)."""
     import schedule
     import time
 
-    print("\n→ Starting scheduler (Ctrl+C to stop)...\n")
+    print("\n-> Starting scheduler (Ctrl+C to stop)...\n")
 
     schedule.every().day.at("06:00").do(
         lambda: cmd_collect(argparse.Namespace(source="arxiv")))
@@ -178,7 +216,6 @@ def cmd_schedule(args):
     schedule.every(6).hours.do(lambda: cmd_classify(None))
     schedule.every().hour.do(lambda: cmd_escalate(None))
 
-    # Run once immediately on start
     cmd_collect(argparse.Namespace(source=None))
     cmd_classify(None)
 
@@ -187,11 +224,9 @@ def cmd_schedule(args):
         time.sleep(60)
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Horizon Scanner — AI technology & trend intelligence"
+        description="Horizon Scanner - AI technology & trend intelligence"
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -207,6 +242,9 @@ def main():
         help="Run only this collector"
     )
 
+    p_thesis = sub.add_parser("thesis", help="Run L3 thesis loop for a cluster")
+    p_thesis.add_argument("--cluster", required=True, help="Cluster UUID to process")
+
     p_seed = sub.add_parser("seed", help="Manually seed a thesis topic")
     p_seed.add_argument("--topic", required=True, help="Topic to seed")
 
@@ -219,6 +257,7 @@ def main():
         "escalate": cmd_escalate,
         "stats":    cmd_stats,
         "seed":     cmd_seed,
+        "thesis":   cmd_thesis,
         "schedule": cmd_schedule,
     }
 

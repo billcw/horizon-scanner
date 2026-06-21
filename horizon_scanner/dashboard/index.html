@@ -1671,6 +1671,29 @@ function renderExitCheckResult(result) {
   `;
 }
 
+
+// === EDGAR enrichment settings hooks ===
+function _edgarApplyConfig(cfg) {
+  try {
+    var t = (cfg && cfg.thesis) || {};
+    var v = document.getElementById("set_edgar_verify");
+    var d = document.getElementById("set_edgar_depth");
+    if (v && t.edgar_verify_tickers !== undefined)
+      v.value = String(t.edgar_verify_tickers);
+    if (d && t.edgar_enrichment_depth !== undefined)
+      d.value = String(t.edgar_enrichment_depth);
+  } catch (e) { console.warn("edgar config apply failed", e); }
+}
+function _edgarCollect(payload) {
+  try {
+    payload.thesis = payload.thesis || {};
+    var v = document.getElementById("set_edgar_verify");
+    var d = document.getElementById("set_edgar_depth");
+    if (v) payload.thesis.edgar_verify_tickers = (v.value === "true");
+    if (d) payload.thesis.edgar_enrichment_depth = parseInt(d.value, 10);
+  } catch (e) { console.warn("edgar collect failed", e); }
+  return payload;
+}
 </script>
 </body>
 </html>

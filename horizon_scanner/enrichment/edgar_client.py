@@ -61,7 +61,7 @@ DEFAULT_USER_AGENT = "HorizonScanner research (contact-not-set@example.com)"
 # SEC allows 10 req/s. We cap well under that to be safe across threads.
 
 class _RateLimiter:
-    def __init__(self, min_interval=0.2):
+    def __init__(self, min_interval=0.34):
         self._min_interval = min_interval     # 5 req/s max, half the limit
         self._lock = threading.Lock()
         self._last = 0.0
@@ -105,7 +105,7 @@ def _headers(json_accept=True) -> dict:
 # Low-level GET with rate limiting + light retry
 # ---------------------------------------------------------------------------
 
-def _get(url, params=None, json_accept=True, max_retries=3, timeout=30):
+def _get(url, params=None, json_accept=True, max_retries=4, timeout=30):
     """Rate-limited GET. Returns requests.Response or None on hard failure."""
     for attempt in range(1, max_retries + 1):
         _RATE.wait()
@@ -131,6 +131,14 @@ def _get(url, params=None, json_accept=True, max_retries=3, timeout=30):
             return None
         if resp.status_code == 404:
             return None  # legitimately not found; caller handles
+        if resp.status_code in (500, 502, 503, 504):
+            # EFTS throws transient 5xx under rapid sequential queries.
+            # Back off and retry rather than giving up.
+            wait = 1.5 * attempt
+            logger.warning("EDGAR HTTP %d (transient); backing off %.1fs (attempt %d/%d).",
+                           resp.status_code, wait, attempt, max_retries)
+            time.sleep(wait)
+            continue
         logger.warning("EDGAR HTTP %d for %s", resp.status_code, url)
         time.sleep(0.5 * attempt)
     return None
@@ -352,7 +360,7 @@ def fulltext_search(query: str, forms=None, cik: int = None,
     forms: optional list, e.g. ["8-K", "10-K"].
     cik:   optional, restrict to one company.
     """
-    params = {"q": query, "from": 0}
+    params = {"q": query, "from": 0, "sort": "desc"}
     if forms:
         params["forms"] = ",".join(forms)
     if cik:
@@ -385,8 +393,21 @@ def fulltext_search(query: str, forms=None, cik: int = None,
                 f"https://www.sec.gov/Archives/edgar/data/"
                 f"{int(first_cik)}/{acc_nodash}/{accession}-index.htm"
             )
+        # EFTS _source field naming varies; pick the first present form key.
+        form_val = ""
+        for _k in ("file_type", "form_type", "root_form"):
+            _v = src.get(_k)
+            if _v:
+                form_val = _v
+                break
+        if not form_val:
+            _forms = src.get("forms")
+            if isinstance(_forms, list) and _forms:
+                form_val = _forms[0]
+            elif isinstance(_forms, str):
+                form_val = _forms
         out.append({
-            "form": src.get("form_type", src.get("root_form", "")),
+            "form": form_val,
             "entity": (src.get("display_names") or [src.get("entity_name", "")])[0]
                       if isinstance(src.get("display_names"), list)
                       else src.get("entity_name", ""),
@@ -412,11 +433,43 @@ def find_licensing_mentions(company: str, lookback_years: int = 2) -> dict:
     date_from = f"{year - lookback_years}-01-01"
 
     # Search this company's own filings for licensing language.
-    hits = fulltext_search(
-        query='"license agreement" OR "licensing agreement" OR "patent license"',
-        cik=cik,
-        date_from=date_from,
-        size=10,
+    # Accuracy over speed: run several reliable single-phrase queries and merge.
+    # A single quoted phrase per call is reliable; an OR-chain trips EFTS on
+    # encoding. Sequential clean queries catch wording variants a single phrase
+    # would miss. Recency sort + forms filter handled in fulltext_search.
+    licensing_phrases = [
+        '"license agreement"',
+        '"licensing agreement"',
+        '"patent license"',
+        '"technology license"',
+        '"cross license"',
+        '"licensing arrangement"',
+    ]
+    merged = {}
+    for phrase in licensing_phrases:
+        try:
+            phrase_hits = fulltext_search(
+                query=phrase,
+                cik=cik,
+                forms=["10-K", "10-Q", "8-K"],
+                date_from=date_from,
+                size=10,
+            )
+        except Exception as e:
+            logger.warning("EDGAR licensing phrase %s failed: %s", phrase, e)
+            phrase_hits = []
+        for h in phrase_hits:
+            key = h.get("accession") or (h.get("index_url") or "")
+            if not key:
+                continue
+            if key not in merged:
+                h["matched_phrase"] = phrase.strip('"')
+                merged[key] = h
+    # Sort merged hits newest-first by filing_date
+    hits = sorted(
+        merged.values(),
+        key=lambda x: x.get("filing_date", ""),
+        reverse=True,
     )
     return {
         "resolved": True,

@@ -85,6 +85,7 @@ class ThesisState(TypedDict):
     scenarios:        list
     entities:         dict
     platform_class:   dict
+    edgar:            dict
     adversarial:      dict
     scoring:          dict
     errors:           list
@@ -466,6 +467,22 @@ Return JSON matching this schema exactly:
 
 
 # ---------------------------------------------------------------------------
+# Step 5.5 - EDGAR Verification & Enrichment
+# Grounds the LLM-produced entity rings against real SEC filings:
+#   - verifies/corrects tickers (cheap, all rings if enabled)
+#   - pulls 10-K IP sections + licensing mentions (configurable ring depth)
+# Non-fatal: handled inside edgar_enrichment; loop try/except is a 2nd net.
+# Controls live in config.yaml -> thesis (edgar_verify_tickers,
+# edgar_enrichment_depth, edgar_ip_excerpt_chars, edgar_max_companies).
+# ---------------------------------------------------------------------------
+
+def step5_5_edgar(state: ThesisState, client) -> ThesisState:
+    logger.info("Step 5.5: EDGAR Verification & Enrichment")
+    from .edgar_enrichment import run_edgar_enrichment
+    return run_edgar_enrichment(state, _thesis_cfg())
+
+
+# ---------------------------------------------------------------------------
 # Step 6 - Platform / Product Classification
 # ---------------------------------------------------------------------------
 
@@ -678,6 +695,7 @@ def run_thesis_loop(cluster_id: str) -> tuple[str, ThesisState]:
         "scenarios":      [],
         "entities":       {},
         "platform_class": {},
+        "edgar":          {},
         "adversarial":    {},
         "scoring":        {},
         "errors":         [],
@@ -690,6 +708,7 @@ def run_thesis_loop(cluster_id: str) -> tuple[str, ThesisState]:
         ("Step 3: Bottleneck Mapping",         step3_bottleneck),
         ("Step 4: Scenario Tree",              step4_scenarios),
         ("Step 5: Entity Mapping",             step5_entities),
+        ("Step 5.5: EDGAR Enrichment",         step5_5_edgar),
         ("Step 6: Platform Classification",    step6_platform),
         ("Step 7: Adversarial Challenge",      step7_adversarial),
         ("Step 8: Scoring & Output",           step8_scoring),

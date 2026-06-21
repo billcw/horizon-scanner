@@ -151,6 +151,12 @@ thesis:
   max_retries_on_missing_citations: 2
   output_dir: "data/exports"
 
+  # --- EDGAR enrichment (Step 5.5) ---
+  edgar_verify_tickers: true       # cheap ticker verify/correct across all rings
+  edgar_enrichment_depth: 1        # 0=off 1=ring1 2=rings1-2 3=rings1-3 4=all rings
+  edgar_ip_excerpt_chars: 1500     # chars of 10-K IP section kept per company
+  edgar_max_companies: 30          # hard ceiling on companies enriched per run
+
 # --- L4 Monitoring ------------------------------------------------------------
 monitoring:
   model: "claude-haiku-4-5-20251001"

@@ -168,6 +168,8 @@ _EDITABLE = {
         "step_model", "adversarial_model", "step_max_tokens", "step_models",
         "max_signals_in_context", "signal_abstract_chars", "context_doc_max_chars",
         "web_search_max_tokens", "perplexity_model", "step_timeout_seconds",
+        "edgar_verify_tickers", "edgar_enrichment_depth",
+        "edgar_ip_excerpt_chars", "edgar_max_companies",
     ],
     "classifier": [
         "model", "fallback_model", "confidence_threshold",

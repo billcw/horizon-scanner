@@ -407,7 +407,7 @@ class HorizonHandler(BaseHTTPRequestHandler):
     def _handle_pipeline_refresh(self):
         body = self._read_json_body()
         source = (body.get("source") or "all").lower()
-        if source not in ("all", "arxiv", "reddit", "trends"):
+        if source not in ("all", "arxiv", "reddit", "trends", "uspto"):
             self._send_json({"error": f"Unknown source: {source}"}, 400)
             return
 
@@ -445,8 +445,10 @@ class HorizonHandler(BaseHTTPRequestHandler):
             from ..collectors.arxiv_collector  import run as run_arxiv
             from ..collectors.reddit_collector import run as run_reddit
             from ..collectors.trends_collector import run as run_trends
+            from ..collectors.uspto_collector  import run as run_uspto
 
-            all_sources = {"arxiv": run_arxiv, "reddit": run_reddit, "trends": run_trends}
+            all_sources = {"arxiv": run_arxiv, "reddit": run_reddit,
+                           "trends": run_trends, "uspto": run_uspto}
             if source == "all":
                 targets = list(all_sources.items())
             else:

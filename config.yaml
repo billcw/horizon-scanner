@@ -60,14 +60,40 @@ collectors:
     min_score: 50
   uspto:
     enabled: true
+    mode: "keyword"            # "keyword" (default, reliable) or "cpc" (experimental)
     schedule: "weekly"
+
+    # Keyword mode: technology phrases searched against invention titles.
+    # These are your signal themes. Add/remove freely. Each becomes one or
+    # more API calls per run, so keep the list focused to respect the quota.
+    keywords:
+      - "neural network accelerator"
+      - "solid state battery"
+      - "quantum error correction"
+      - "silicon photonics"
+      - "solid oxide electrolysis"
+      - "gallium nitride power"
+      - "neuromorphic computing"
+      - "perovskite solar"
+
+    # CPC mode codes (only used if mode: "cpc"). Field name unverified --
+    # run verify_cpc_field() once your key is live before trusting this.
     cpc_codes:
       - "G06N"      # AI / machine learning
       - "H01L"      # Semiconductors
       - "H04B10"    # Optical comms
       - "G16Y"      # IoT
       - "B64G"      # Space systems
-    max_results_per_run: 200
+
+    # --- Rate-limit safety (conservative; tune once you know your quota) ---
+    # IMPORTANT: exceeding the ODP download quota triggers a 7-DAY lockout
+    # from first key use. Start small, raise slowly.
+    page_limit: 25                 # records per page (ODP default 25)
+    max_pages_per_keyword: 4       # pages per keyword per run
+    max_requests_per_run: 40       # HARD ceiling on total HTTP calls per run
+    lookback_days: 30              # only applications filed in last N days
+    backoff_base_seconds: 2.0      # exponential backoff base on HTTP 429
+    max_retries: 4                 # 429 retries before aborting the run
 
 # --- L2 Classifier ------------------------------------------------------------
 classifier:
@@ -132,10 +158,20 @@ monitoring:
   probability_alert_threshold: 0.15    # alert if scenario probability shifts >15%
   archive_after_days: 180              # archive theses with no new signals
 
+# --- Enrichment (SEC EDGAR for L3 entity grounding) ---------------------------
+# SEC EDGAR is free and needs no API key, but the SEC requires a User-Agent
+# header identifying you (name + a real, reachable email). Placeholder or
+# fake-looking emails get a 403.
+enrichment:
+  edgar:
+    user_agent: "HorizonScanner research (billcwenz68@gmail.com)"
+    lookback_years: 2          # how far back to search filings for licensing
+    fulltext_max_hits: 10      # cap on full-text search results per query
+
 # --- API endpoints (keys in environment variables, not here) ------------------
 apis:
   anthropic_base: "https://api.anthropic.com"
   perplexity_base: "https://api.perplexity.ai"
   reddit_base:    "https://www.reddit.com"
   arxiv_base:     "http://export.arxiv.org/api/query"
-  uspto_base:     "https://developer.uspto.gov/ibd-api/v1"
+  uspto_base:     "https://api.uspto.gov/api/v1"

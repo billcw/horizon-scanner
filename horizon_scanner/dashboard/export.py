@@ -210,6 +210,12 @@ def config_payload() -> dict:
                     "geo": src.get("google_trends", {}).get("geo"),
                     "enabled": src.get("google_trends", {}).get("enabled"),
                 },
+                "uspto": {
+                    "enabled": src.get("uspto", {}).get("enabled"),
+                    "mode": src.get("uspto", {}).get("mode"),
+                    "max_requests_per_run": src.get("uspto", {}).get("max_requests_per_run"),
+                    "lookback_days": src.get("uspto", {}).get("lookback_days"),
+                },
             }
         else:
             editable[section] = {k: src.get(k) for k in keys if k in src}

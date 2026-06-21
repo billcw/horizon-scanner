@@ -334,6 +334,7 @@
     <button class="ghost src" data-source="arxiv">arXiv</button>
     <button class="ghost src" data-source="reddit">Reddit</button>
     <button class="ghost src" data-source="trends">Trends</button>
+    <button class="ghost src" data-source="uspto">USPTO</button>
   </div>
 </header>
 
@@ -1008,6 +1009,8 @@ const SOURCE_GROUPS = [
     hint:"Free-text search topics" },
   { type:"reddit", title:"Subreddits", placeholder:"e.g. energy",
     hint:"Subreddit names without the r/ prefix" },
+  { type:"uspto",  title:"USPTO keywords", placeholder:"e.g. solid state battery",
+    hint:"Technology phrases searched against patent invention titles" },
 ];
 
 async function loadSources(){
@@ -1154,6 +1157,8 @@ function renderSettings(c){
       <div class="set-row"><label>Reddit post limit</label>${numInput("co_reddit_limit", (co.reddit||{}).post_limit)}</div>
       <div class="set-row"><label>Reddit min score</label>${numInput("co_reddit_score", (co.reddit||{}).min_score)}</div>
       <div class="set-row"><label>Trends geo</label><input id="co_trends_geo" value="${esc((co.google_trends||{}).geo||"")}"></div>
+      <div class="set-row"><label>USPTO max requests / run</label>${numInput("co_uspto_maxreq", (co.uspto||{}).max_requests_per_run)}</div>
+      <div class="set-row"><label>USPTO lookback days</label>${numInput("co_uspto_lookback", (co.uspto||{}).lookback_days)}</div>
     </div>
   </div>
 

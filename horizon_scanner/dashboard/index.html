@@ -204,6 +204,22 @@
   .ring-legend .lab { color: var(--ink-dim); }
   .ring-legend .lab b { color: var(--ink); }
 
+  /* ---- EDGAR enrichment panel ---------------------------------------*/
+  .edgar-panel { display: flex; flex-direction: column; gap: 14px; }
+  .edgar-empty { color: var(--muted, #8a93a3); font-size: 13px; line-height: 1.5; padding: 6px 0; }
+  .edgar-ring-label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted, #8a93a3); margin-bottom: 6px; }
+  .edgar-ring { border-left: 2px solid var(--line, #2a3344); padding-left: 12px; }
+  .edgar-co { padding: 7px 0; border-bottom: 1px solid var(--line, #1e2430); }
+  .edgar-co:last-child { border-bottom: none; }
+  .edgar-co-name { font-weight: 600; }
+  .edgar-ok { font-size: 10px; color: #4ec98f; border: 1px solid #2f6f52; border-radius: 4px; padding: 1px 5px; margin-left: 4px; }
+  .edgar-no { font-size: 10px; color: #c9974e; border: 1px solid #6f5a2f; border-radius: 4px; padding: 1px 5px; margin-left: 4px; }
+  .edgar-vname { font-size: 11px; color: var(--muted, #8a93a3); margin-top: 2px; }
+  .edgar-lic { font-size: 12px; margin-top: 4px; }
+  .edgar-lic-label { color: var(--muted, #8a93a3); }
+  .edgar-ip { font-size: 12px; margin-top: 4px; line-height: 1.45; color: var(--fg, #c7cedb); }
+  .edgar-ipdate { color: var(--muted, #8a93a3); }
+
   /* ---- Scenario tree -------------------------------------------------*/
   .scenarios { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 11px; }
   .scn { background: #11161d; border: 1px solid var(--edge); border-radius: 7px; padding: 13px;
@@ -699,6 +715,92 @@ function scoreColor(n){
   return "var(--danger)";
 }
 
+function _edgarSecUrl(cik){
+  // Zero-pad CIK to 10 digits for the EDGAR browse URL.
+  var s = String(cik);
+  while (s.length < 10) s = "0" + s;
+  return "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=" + s + "&type=&dateb=&owner=include&count=40";
+}
+
+function _edgarCompanyRow(co){
+  if (!co || typeof co !== "object") return "";
+  var name = esc(co.company || co.ticker || "Unknown");
+  var verified = co.ticker_verified === true;
+  var badge = verified
+    ? '<span class="edgar-ok">verified</span>'
+    : '<span class="edgar-no">unverified</span>';
+
+  var cikPart = "";
+  if (co.cik) {
+    cikPart = ' &middot; CIK <a href="' + _edgarSecUrl(co.cik) +
+              '" target="_blank" rel="noopener">' + esc(String(co.cik)) + '</a>';
+  }
+
+  var vname = "";
+  if (co.verified_name && co.verified_name !== co.company) {
+    vname = '<div class="edgar-vname">' + esc(co.verified_name) + '</div>';
+  }
+
+  var lic = "";
+  var hits = Array.isArray(co.licensing_hits) ? co.licensing_hits : [];
+  if (hits.length) {
+    var links = hits.slice(0, 6).map(function(h){
+      var date = esc(h.filing_date || "filing");
+      var url = h.index_url || "#";
+      return '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + date + '</a>';
+    }).join(", ");
+    var more = hits.length > 6 ? ' (+' + (hits.length - 6) + ' more)' : '';
+    lic = '<div class="edgar-lic"><span class="edgar-lic-label">licensing filings (' +
+          hits.length + '):</span> ' + links + more + '</div>';
+  }
+
+  var ip = "";
+  if (co.ip_summary) {
+    var ipdate = co.ip_filing_date ? ' <span class="edgar-ipdate">(' + esc(co.ip_filing_date) + ')</span>' : '';
+    ip = '<div class="edgar-ip">' + esc(co.ip_summary) + ipdate + '</div>';
+  }
+
+  return '<div class="edgar-co">' +
+           '<div class="edgar-co-head"><span class="edgar-co-name">' + name + '</span> ' +
+           badge + cikPart + '</div>' +
+           vname + lic + ip +
+         '</div>';
+}
+
+function renderEdgarPanel(t){
+  var rings = [
+    ["Ring 1 - Direct",    t.entities_ring1],
+    ["Ring 2 - Enabling",  t.entities_ring2],
+    ["Ring 3 - Benefiting",t.entities_ring3],
+    ["Ring 4 - Threatened",t.entities_ring4]
+  ];
+
+  // Detect whether ANY company carries enrichment fields.
+  var enriched = false;
+  rings.forEach(function(pair){
+    (pair[1] || []).forEach(function(co){
+      if (co && (co.edgar_enriched || co.ticker_verified || co.cik)) enriched = true;
+    });
+  });
+
+  if (!enriched) {
+    return '<div class="edgar-empty">No EDGAR enrichment on this thesis yet. ' +
+           'Re-run the thesis with Step 5.5 enabled (Settings &rarr; EDGAR Enrichment) to populate ' +
+           'verified tickers, CIKs, licensing filings, and IP summaries.</div>';
+  }
+
+  var blocks = rings.map(function(pair){
+    var label = pair[0];
+    var cos = pair[1] || [];
+    if (!cos.length) return "";
+    var rows = cos.map(_edgarCompanyRow).join("");
+    return '<div class="edgar-ring"><div class="edgar-ring-label">' + esc(label) +
+           '</div>' + rows + '</div>';
+  }).join("");
+
+  return '<div class="edgar-panel">' + blocks + '</div>';
+}
+
 function renderThesis(t){
   State.selectedThesis = t;
   const q = t.thesis_quality_score ?? 0;
@@ -767,6 +869,10 @@ function renderThesis(t){
       </div>
     </section>
 
+    <section class="block">
+      <h3>EDGAR Enrichment</h3>
+      ${renderEdgarPanel(t)}
+    </section>
     <section class="block">
       <h3>Scenario Tree</h3>
       <div class="scenarios">${scenarios || '<div class="empty">No scenarios.</div>'}</div>

@@ -996,6 +996,7 @@ async function loadSettings(){
     State.modelSuggestions = data.model_suggestions || [];
     $("#model-options").innerHTML = State.modelSuggestions.map(m => `<option value="${esc(m)}">`).join("");
     el.innerHTML = renderSettings(data.config);
+    _edgarApplyConfig(data.config);
     wireSettings();
     await loadSources();
   } catch(e){ el.innerHTML = `<div class="empty">Failed to load settings: ${esc(e.message)}</div>`; }
@@ -1143,6 +1144,13 @@ function renderSettings(c){
     </div>
 
     <div class="set-card">
+      <h3>EDGAR Enrichment</h3>
+      <div class="set-row"><label>Verify tickers (SEC)</label><select id="set_edgar_verify"><option value="true">On</option><option value="false">Off</option></select></div>
+      <div class="set-row"><label>Deep enrichment depth</label><select id="set_edgar_depth"><option value="0">0 - off</option><option value="1">1 - ring 1</option><option value="2">2 - rings 1-2</option><option value="3">3 - rings 1-3</option><option value="4">4 - all rings</option></select></div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin:10px 0 0;line-height:1.5">Ticker verify is cheap and runs on all rings. Deep enrichment pulls 10-K IP sections and licensing hits and is more expensive the deeper it goes.</div>
+    </div>
+
+    <div class="set-card">
       <h3>Classifier</h3>
       <div class="set-row"><label>Triage model</label>${modelInput("cl_model", cl.model)}</div>
       <div class="set-row"><label>Fallback model</label>${modelInput("cl_fallback", cl.fallback_model)}</div>
@@ -1220,6 +1228,7 @@ function wireSettings(){
       },
     };
 
+    _edgarCollect(payload);
     try {
       const r = await api("/api/config", {
         method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});

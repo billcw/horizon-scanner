@@ -1,183 +1,130 @@
-# =============================================================================
-# HORIZON SCANNER - config.yaml
-# All settings live here. API keys go in environment variables (never in this file).
-# Copy this file to any machine, update paths if needed, and go.
-# =============================================================================
-
-# --- Database -----------------------------------------------------------------
 database:
-  path: "data/horizon_scanner.db"      # relative to project root
-
-# --- ChromaDB -----------------------------------------------------------------
+  path: data/horizon_scanner.db
 chromadb:
-  path: "data/chromadb"                # relative to project root
-  collection_signals: "signals"
-  collection_theses:  "theses"
-
-# --- Logging ------------------------------------------------------------------
+  path: data/chromadb
+  collection_signals: signals
+  collection_theses: theses
 logging:
-  path: "logs/horizon_scanner.log"
-  level: "INFO"                        # DEBUG | INFO | WARNING | ERROR
-
-# --- Collector schedule -------------------------------------------------------
+  path: logs/horizon_scanner.log
+  level: INFO
 collectors:
   arxiv:
     enabled: true
     categories:
-      - "cs.AI"
-      - "cs.LG"
-      - "cs.AR"
-      - "cs.ET"
-      - "quant-ph"
-      - "cond-mat.mtrl-sci"
+    - cs.AI
+    - cs.LG
+    - cs.AR
+    - cs.ET
+    - quant-ph
+    - cond-mat.mtrl-sci
     max_results_per_run: 100
-    schedule: "daily"
+    schedule: daily
   google_trends:
     enabled: true
-    schedule: "daily"
-    geo: "US"
+    schedule: daily
+    geo: US
     seed_topics:
-      - "AI infrastructure"
-      - "orbital computing"
-      - "neuromorphic chip"
-      - "solid state battery"
-      - "quantum error correction"
-      - "grid transformer"
-      - "small modular reactor"
-      - "brain computer interface"
-      - "humanoid robot"
-      - "photonic computing"
+    - AI infrastructure
+    - orbital computing
+    - neuromorphic chip
+    - solid state battery
+    - quantum error correction
+    - grid transformer
+    - small modular reactor
+    - brain computer interface
+    - humanoid robot
+    - photonic computing
   reddit:
     enabled: true
-    schedule: "6hourly"
+    schedule: 6hourly
     subreddits:
-      - "Futurology"
-      - "technology"
-      - "singularity"
-      - "investing"
-      - "SecurityAnalysis"
+    - Futurology
+    - technology
+    - singularity
+    - investing
+    - SecurityAnalysis
     post_limit: 25
     min_score: 50
   uspto:
     enabled: true
-    mode: "keyword"            # "keyword" (default, reliable) or "cpc" (experimental)
-    schedule: "weekly"
-
-    # Keyword mode: technology phrases searched against invention titles.
-    # These are your signal themes. Add/remove freely. Each becomes one or
-    # more API calls per run, so keep the list focused to respect the quota.
+    mode: keyword
+    schedule: weekly
     keywords:
-      - "neural network accelerator"
-      - "solid state battery"
-      - "quantum error correction"
-      - "silicon photonics"
-      - "solid oxide electrolysis"
-      - "gallium nitride power"
-      - "neuromorphic computing"
-      - "perovskite solar"
-
-    # CPC mode codes (only used if mode: "cpc"). Field name unverified --
-    # run verify_cpc_field() once your key is live before trusting this.
+    - neural network accelerator
+    - solid state battery
+    - quantum error correction
+    - silicon photonics
+    - solid oxide electrolysis
+    - gallium nitride power
+    - neuromorphic computing
+    - perovskite solar
     cpc_codes:
-      - "G06N"      # AI / machine learning
-      - "H01L"      # Semiconductors
-      - "H04B10"    # Optical comms
-      - "G16Y"      # IoT
-      - "B64G"      # Space systems
-
-    # --- Rate-limit safety (conservative; tune once you know your quota) ---
-    # IMPORTANT: exceeding the ODP download quota triggers a 7-DAY lockout
-    # from first key use. Start small, raise slowly.
-    page_limit: 25                 # records per page (ODP default 25)
-    max_pages_per_keyword: 4       # pages per keyword per run
-    max_requests_per_run: 40       # HARD ceiling on total HTTP calls per run
-    lookback_days: 30              # only applications filed in last N days
-    backoff_base_seconds: 2.0      # exponential backoff base on HTTP 429
-    max_retries: 4                 # 429 retries before aborting the run
-
-# --- L2 Classifier ------------------------------------------------------------
+    - G06N
+    - H01L
+    - H04B10
+    - G16Y
+    - B64G
+    page_limit: 25
+    max_pages_per_keyword: 4
+    max_requests_per_run: 40
+    lookback_days: 30
+    backoff_base_seconds: 2.0
+    max_retries: 4
 classifier:
-  model: "claude-haiku-4-5-20251001"   # fast/cheap for high-volume triage
-  fallback_model: "claude-sonnet-4-6"  # used if haiku confidence < threshold
-  confidence_threshold: 0.70           # below this = retry with sonnet
-  dedup_similarity_threshold: 0.92     # cosine similarity for near-duplicate detection
+  model: claude-haiku-4-5-20251001
+  fallback_model: claude-sonnet-4-6
+  confidence_threshold: 0.7
+  dedup_similarity_threshold: 0.92
   dedup_lookback_days: 90
   cluster_window_days: 30
-  cluster_escalation_threshold: 3      # signals in a cluster before L3 fires
-
-# --- L3 Thesis Loop -----------------------------------------------------------
+  cluster_escalation_threshold: 3
 thesis:
-  # Default models (can be overridden per-step below)
-  step_model: "claude-sonnet-4-6"          # default for steps 1-6 and 8
-  adversarial_model: "claude-sonnet-4-6"   # step 7 default (set to opus when ready)
-
-  # Per-step max_tokens
-  # Step 7 needs extra headroom to avoid JSON truncation in the bear case output.
-  # All values tunable from the dashboard Settings panel.
+  step_model: claude-sonnet-4-6
+  adversarial_model: claude-sonnet-4-6
   step_max_tokens:
-    step1_context:      1000
-    step2_viability:    1500
-    step3_bottleneck:   1000
-    step4_scenarios:    2000
-    step5_entities:     2000
-    step6_platform:     1500
-    step7_adversarial:  3000
-    step8_scoring:      1500
-
-  # Per-step model overrides. Set to null to use the step_model default above.
-  # Example: set step7_adversarial to "claude-opus-4-6" for stronger bear cases.
+    step1_context: 1000
+    step2_viability: 1500
+    step3_bottleneck: 1000
+    step4_scenarios: 2000
+    step5_entities: 2000
+    step6_platform: 1500
+    step7_adversarial: 3000
+    step8_scoring: 1500
   step_models:
-    step1_context:      null
-    step2_viability:    null
-    step3_bottleneck:   null
-    step4_scenarios:    null
-    step5_entities:     null
-    step6_platform:     null
-    step7_adversarial:  null
-    step8_scoring:      null
-
-  # Context assembly controls
-  max_signals_in_context: 10           # max signals fed into Step 1 context doc
-  signal_abstract_chars: 500           # chars per signal abstract in context
-  context_doc_max_chars: 3000          # total chars of context_doc passed to Steps 2+
-
-  # Web search controls
-  web_search_max_tokens: 500           # Perplexity response token cap
-  perplexity_model: "sonar"            # sonar | sonar-pro
-
-  # Safety controls
-  step_timeout_seconds: 90             # per-step hang protection (0 = disabled)
+    step1_context: null
+    step2_viability: null
+    step3_bottleneck: null
+    step4_scenarios: null
+    step5_entities: null
+    step6_platform: null
+    step7_adversarial: null
+    step8_scoring: null
+  max_signals_in_context: 10
+  signal_abstract_chars: 500
+  context_doc_max_chars: 3000
+  web_search_max_tokens: 500
+  perplexity_model: sonar
+  step_timeout_seconds: 90
   max_search_calls_per_step: 3
   max_retries_on_missing_citations: 2
-  output_dir: "data/exports"
-
-  # --- EDGAR enrichment (Step 5.5) ---
-  edgar_verify_tickers: true       # cheap ticker verify/correct across all rings
-  edgar_enrichment_depth: 1        # 0=off 1=ring1 2=rings1-2 3=rings1-3 4=all rings
-  edgar_ip_excerpt_chars: 1500     # chars of 10-K IP section kept per company
-  edgar_max_companies: 30          # hard ceiling on companies enriched per run
-
-# --- L4 Monitoring ------------------------------------------------------------
+  output_dir: data/exports
+  edgar_verify_tickers: true
+  edgar_enrichment_depth: 1
+  edgar_ip_excerpt_chars: 1500
+  edgar_max_companies: 30
 monitoring:
-  model: "claude-haiku-4-5-20251001"
-  schedule: "weekly"
-  probability_alert_threshold: 0.15    # alert if scenario probability shifts >15%
-  archive_after_days: 180              # archive theses with no new signals
-
-# --- Enrichment (SEC EDGAR for L3 entity grounding) ---------------------------
-# SEC EDGAR is free and needs no API key, but the SEC requires a User-Agent
-# header identifying you (name + a real, reachable email). Placeholder or
-# fake-looking emails get a 403.
+  model: claude-haiku-4-5-20251001
+  schedule: weekly
+  probability_alert_threshold: 0.15
+  archive_after_days: 180
 enrichment:
   edgar:
-    user_agent: "HorizonScanner research (billcwenz68@gmail.com)"
-    lookback_years: 2          # how far back to search filings for licensing
-    fulltext_max_hits: 10      # cap on full-text search results per query
-
-# --- API endpoints (keys in environment variables, not here) ------------------
+    user_agent: HorizonScanner research (billcwenz68@gmail.com)
+    lookback_years: 2
+    fulltext_max_hits: 10
 apis:
-  anthropic_base: "https://api.anthropic.com"
-  perplexity_base: "https://api.perplexity.ai"
-  reddit_base:    "https://www.reddit.com"
-  arxiv_base:     "http://export.arxiv.org/api/query"
-  uspto_base:     "https://api.uspto.gov/api/v1"
+  anthropic_base: https://api.anthropic.com
+  perplexity_base: https://api.perplexity.ai
+  reddit_base: https://www.reddit.com
+  arxiv_base: http://export.arxiv.org/api/query
+  uspto_base: https://api.uspto.gov/api/v1

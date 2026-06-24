@@ -245,6 +245,14 @@ class HorizonHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "not found"}, 404)
                 return
 
+            # /api/thesis/<id>/versions -- version history
+            # THESIS-VERSIONING-SERVER
+            if route.startswith("/api/thesis/") and route.endswith("/versions"):
+                thesis_id = route[len("/api/thesis/"):-len("/versions")].strip("/")
+                versions = db.get_thesis_versions(thesis_id)
+                self._send_json({"versions": versions})
+                return
+
             self._send_json({"error": f"Unknown route: {route}"}, 404)
 
         except Exception as e:
@@ -290,8 +298,20 @@ class HorizonHandler(BaseHTTPRequestHandler):
                 return
 
             # L5-D: exit discipline check for a live thesis
+            if route == "/api/thesis/enrich":
+                self._handle_enrich()
+                return
+
+            if route == "/api/thesis/deepen":
+                self._handle_deepen()
+                return
+
             if route == "/api/thesis/exit-check":
                 self._handle_exit_check()
+                return
+
+            if route == "/api/thesis/rerun":
+                self._handle_thesis_rerun()
                 return
 
             if route == "/api/sources":
@@ -362,6 +382,73 @@ class HorizonHandler(BaseHTTPRequestHandler):
         _deep_merge(cfg, updates)
         _write_config(cfg)
         self._send_json({"ok": True, "message": "Settings saved. Takes effect on next run."})
+
+    def _handle_thesis_rerun(self):
+        """Re-run the thesis loop on an existing thesis, snapshotting first.
+        Body: {"thesis_id": "...", "trigger": "manual_rerun"}
+        """
+        body = self._read_json_body()
+        thesis_id = (body.get("thesis_id") or "").strip()
+        trigger = (body.get("trigger") or "manual_rerun").strip()
+        if not thesis_id:
+            self._send_json({"error": "thesis_id required"}, 400)
+            return
+
+        with _JOBS_LOCK:
+            for j in _JOBS.values():
+                if (j.get("kind") == "thesis_rerun"
+                        and j.get("thesis_id") == thesis_id
+                        and j.get("status") == "running"):
+                    self._send_json({"ok": True, "job_id": j["job_id"], "already": True})
+                    return
+
+        job_id = str(uuid.uuid4())
+        with _JOBS_LOCK:
+            _JOBS[job_id] = {
+                "job_id": job_id,
+                "kind": "thesis_rerun",
+                "thesis_id": thesis_id,
+                "status": "running",
+                "error": None,
+                "started": datetime.now(timezone.utc).isoformat(),
+                "finished": None,
+            }
+
+        t = threading.Thread(
+            target=self._run_thesis_rerun_job,
+            args=(job_id, thesis_id, trigger),
+            daemon=True
+        )
+        t.start()
+        self._send_json({"ok": True, "job_id": job_id})
+
+    def _run_thesis_rerun_job(self, job_id: str, thesis_id: str, trigger: str):
+        """Background worker: snapshot then re-run thesis loop."""
+        from ..thesis.thesis_loop import run_thesis_loop
+        try:
+            version_num = db.snapshot_thesis_version(thesis_id, trigger)
+            logger.info("Thesis %s snapshotted as version %s", thesis_id, version_num)
+
+            with db.get_connection() as conn:
+                row = conn.execute(
+                    "SELECT cluster_id FROM theses WHERE id=?", (thesis_id,)
+                ).fetchone()
+            if row is None or not row["cluster_id"]:
+                raise ValueError("Thesis has no cluster_id, cannot rerun.")
+            cluster_id = row["cluster_id"]
+
+            new_thesis_id, _state = run_thesis_loop(cluster_id)
+            with _JOBS_LOCK:
+                _JOBS[job_id]["status"] = "done"
+                _JOBS[job_id]["thesis_id"] = new_thesis_id
+                _JOBS[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+        except Exception as e:
+            logger.error("Thesis rerun job %s failed: %s", job_id, e)
+            logger.debug(traceback.format_exc())
+            with _JOBS_LOCK:
+                _JOBS[job_id]["status"] = "error"
+                _JOBS[job_id]["error"] = str(e)
+                _JOBS[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
 
     def _handle_thesis_run(self):
         body = self._read_json_body()
@@ -489,8 +576,9 @@ class HorizonHandler(BaseHTTPRequestHandler):
         source_type = (body.get("source_type") or "").lower()
         value = body.get("value", "")
         label = body.get("label", "")
-        if source_type not in ("arxiv", "trends", "reddit"):
-            self._send_json({"error": "source_type must be arxiv, trends, or reddit"}, 400)
+        # SOURCE-TYPE-USPTO-ALLOWED
+        if source_type not in ("arxiv", "trends", "reddit", "uspto"):
+            self._send_json({"error": "source_type must be arxiv, trends, reddit, or uspto"}, 400)
             return
         if not (value or "").strip():
             self._send_json({"error": "value required"}, 400)
@@ -708,7 +796,307 @@ class HorizonHandler(BaseHTTPRequestHandler):
 
     # -- L5-D: exit discipline check ----------------------------------------
 
-    def _handle_exit_check(self):
+    # -- EDGAR enrichment backfill job --------------------------------------
+
+    def _handle_enrich(self):
+        """
+        Trigger Step 5.5 EDGAR enrichment on an already-generated thesis.
+        Allows enriching theses that pre-date the enrichment feature.
+
+        Body: {"thesis_id": "..."}
+        Returns: {"ok": True, "job_id": "..."}
+        """
+        body = self._read_json_body()
+        thesis_id = (body.get("thesis_id") or "").strip()
+        if not thesis_id:
+            self._send_json({"error": "thesis_id required"}, 400)
+            return
+
+        # Prevent duplicate runs for the same thesis
+        with _JOBS_LOCK:
+            for j in _JOBS.values():
+                if (j.get("kind") == "enrich"
+                        and j.get("thesis_id") == thesis_id
+                        and j.get("status") == "running"):
+                    self._send_json({"ok": True, "job_id": j["job_id"],
+                                     "already": True})
+                    return
+
+        job_id = str(uuid.uuid4())
+        with _JOBS_LOCK:
+            _JOBS[job_id] = {
+                "job_id": job_id,
+                "kind": "enrich",
+                "thesis_id": thesis_id,
+                "status": "running",
+                "step": "starting",
+                "companies_enriched": 0,
+                "companies_skipped": 0,
+                "total_hits": 0,
+                "error": None,
+                "started": datetime.now(timezone.utc).isoformat(),
+                "finished": None,
+            }
+
+        t = threading.Thread(
+            target=self._run_enrich_job,
+            args=(job_id, thesis_id),
+            daemon=True,
+        )
+        t.start()
+        self._send_json({"ok": True, "job_id": job_id})
+
+    def _run_enrich_job(self, job_id: str, thesis_id: str):
+        import json as _json
+
+        def _set(**kw):
+            with _JOBS_LOCK:
+                _JOBS[job_id].update(kw)
+
+        try:
+            from ..enrichment.edgar_client import (
+                resolve_cik,
+                find_licensing_mentions,
+            )
+
+            # Load ring data from DB
+            with db.get_connection() as conn:
+                row = conn.execute(
+                    "SELECT entities_ring1, entities_ring2, "
+                    "       entities_ring3, entities_ring4 "
+                    "FROM theses WHERE id = ?",
+                    (thesis_id,),
+                ).fetchone()
+
+            if row is None:
+                _set(status="error",
+                     error="thesis not found: {}".format(thesis_id),
+                     finished=datetime.now(timezone.utc).isoformat())
+                return
+
+            def _load(col):
+                try:
+                    v = row[col]
+                    return _json.loads(v) if v else []
+                except Exception:
+                    return []
+
+            ring1 = _load("entities_ring1")
+            ring2 = _load("entities_ring2")
+            ring3 = _load("entities_ring3")
+            ring4 = _load("entities_ring4")
+
+            all_rings = [ring1, ring2, ring3, ring4]
+            companies_enriched = 0
+            companies_skipped = 0
+            total_hits = 0
+
+            for ring in all_rings:
+                for co in ring:
+                    if not isinstance(co, dict):
+                        continue
+                    ticker = (co.get("ticker") or "").strip()
+                    company = (co.get("company") or "").strip()
+                    lookup = ticker or company
+                    if not lookup:
+                        companies_skipped += 1
+                        continue
+
+                    _set(step="resolving {}".format(lookup))
+
+                    # CIK resolution
+                    try:
+                        ident = resolve_cik(lookup)
+                    except Exception as e:
+                        logger.warning("Enrich: resolve_cik failed for %s: %s",
+                                       lookup, e)
+                        ident = {}
+
+                    if not ident:
+                        # Try company name if ticker didn't work
+                        if ticker and company:
+                            try:
+                                ident = resolve_cik(company)
+                            except Exception:
+                                ident = {}
+
+                    if ident:
+                        co["cik"] = ident.get("cik")
+                        co["verified_name"] = ident.get("title", "")
+                        co["ticker_verified"] = True
+                        if ticker and ident.get("ticker", "").upper() != ticker.upper():
+                            co["ticker_corrected"] = ident.get("ticker", "")
+                    else:
+                        co["ticker_verified"] = False
+                        co.setdefault("cik", None)
+                        co.setdefault("verified_name", "")
+
+                    # Licensing hits
+                    hits = []
+                    if ident:
+                        _set(step="EDGAR search: {}".format(lookup))
+                        try:
+                            result = find_licensing_mentions(lookup)
+                            hits = result.get("hits", [])
+                        except Exception as e:
+                            logger.warning("Enrich: find_licensing_mentions "
+                                           "failed for %s: %s", lookup, e)
+                            hits = []
+
+                    co["licensing_hits"] = hits
+                    co["edgar_enriched"] = True
+                    total_hits += len(hits)
+                    companies_enriched += 1
+                    _set(
+                        companies_enriched=companies_enriched,
+                        companies_skipped=companies_skipped,
+                        total_hits=total_hits,
+                    )
+
+            # Persist all four rings back
+            db.update_thesis_rings(
+                thesis_id,
+                ring1=ring1 if ring1 else None,
+                ring2=ring2 if ring2 else None,
+                ring3=ring3 if ring3 else None,
+                ring4=ring4 if ring4 else None,
+            )
+
+            _set(
+                status="done",
+                step="complete",
+                companies_enriched=companies_enriched,
+                companies_skipped=companies_skipped,
+                total_hits=total_hits,
+                finished=datetime.now(timezone.utc).isoformat(),
+            )
+
+        except Exception as e:
+            logger.error("Enrich job %s failed: %s", job_id, e)
+            logger.debug(traceback.format_exc())
+            _set(status="error", error=str(e),
+                 finished=datetime.now(timezone.utc).isoformat())
+
+    # -- Deepen counterparties job -----------------------------------------
+
+
+    def _handle_deepen(self):
+        """
+        Trigger a "deepen counterparties" pass for one thesis.
+        Reads entities_ring* from DB, calls deepen_counterparties(),
+        persists the mutated ring JSON back. Background job + poll.
+
+        Body: {"thesis_id": "..."}
+        Returns: {"ok": True, "job_id": "..."}
+        """
+        body = self._read_json_body()
+        thesis_id = (body.get("thesis_id") or "").strip()
+        if not thesis_id:
+            self._send_json({"error": "thesis_id required"}, 400)
+            return
+
+        # Prevent duplicate runs for the same thesis
+        with _JOBS_LOCK:
+            for j in _JOBS.values():
+                if (j.get("kind") == "deepen"
+                        and j.get("thesis_id") == thesis_id
+                        and j.get("status") == "running"):
+                    self._send_json({"ok": True, "job_id": j["job_id"],
+                                     "already": True})
+                    return
+
+        job_id = str(uuid.uuid4())
+        with _JOBS_LOCK:
+            _JOBS[job_id] = {
+                "job_id": job_id,
+                "kind": "deepen",
+                "thesis_id": thesis_id,
+                "status": "running",
+                "companies_processed": 0,
+                "filings_read": 0,
+                "counterparties_found": 0,
+                "error": None,
+                "started": datetime.now(timezone.utc).isoformat(),
+                "finished": None,
+            }
+
+        t = threading.Thread(
+            target=self._run_deepen_job,
+            args=(job_id, thesis_id),
+            daemon=True,
+        )
+        t.start()
+        self._send_json({"ok": True, "job_id": job_id})
+
+    def _run_deepen_job(self, job_id: str, thesis_id: str):
+        import json as _json
+
+        def _set(**kw):
+            with _JOBS_LOCK:
+                _JOBS[job_id].update(kw)
+
+        try:
+            from ..enrichment.edgar_client import deepen_counterparties
+
+            # Load ring data from DB
+            with db.get_connection() as conn:
+                row = conn.execute(
+                    "SELECT entities_ring1, entities_ring2, "
+                    "       entities_ring3, entities_ring4 "
+                    "FROM theses WHERE id = ?",
+                    (thesis_id,),
+                ).fetchone()
+
+            if row is None:
+                _set(status="error",
+                     error="thesis not found: {}".format(thesis_id),
+                     finished=datetime.now(timezone.utc).isoformat())
+                return
+
+            def _load(col):
+                try:
+                    v = row[col]
+                    return _json.loads(v) if v else []
+                except Exception:
+                    return []
+
+            ring1 = _load("entities_ring1")
+            ring2 = _load("entities_ring2")
+            ring3 = _load("entities_ring3")
+            ring4 = _load("entities_ring4")
+
+            # Flatten all rings for the pass; deepen mutates in place
+            all_entities = ring1 + ring2 + ring3 + ring4
+
+            _set(status="running")
+            result = deepen_counterparties(all_entities)
+
+            # Persist mutated rings back (only if they had content)
+            db.update_thesis_rings(
+                thesis_id,
+                ring1=ring1 if ring1 else None,
+                ring2=ring2 if ring2 else None,
+                ring3=ring3 if ring3 else None,
+                ring4=ring4 if ring4 else None,
+            )
+
+            _set(
+                status="done",
+                companies_processed=result.get("companies_processed", 0),
+                filings_read=result.get("filings_read", 0),
+                counterparties_found=result.get("counterparties_found", 0),
+                finished=datetime.now(timezone.utc).isoformat(),
+            )
+
+        except Exception as e:
+            logger.error("Deepen job %s failed: %s", job_id, e)
+            logger.debug(traceback.format_exc())
+            _set(status="error", error=str(e),
+                 finished=datetime.now(timezone.utc).isoformat())
+
+    # -- L5-D: exit discipline check ----------------------------------------
+
+    def _handle_exit_check(self):  # EXIT-CHECK-RESTORED
         """
         Run an exit discipline check for a live thesis.
         Body: {"thesis_id": "...", "proposed_reason": "..."}

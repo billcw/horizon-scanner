@@ -35,7 +35,7 @@ collectors:
     - humanoid robot
     - photonic computing
   reddit:
-    enabled: true
+    enabled: false
     schedule: 6hourly
     subreddits:
     - Futurology
@@ -67,7 +67,7 @@ collectors:
     page_limit: 25
     max_pages_per_keyword: 4
     max_requests_per_run: 40
-    lookback_days: 30
+    lookback_days: 90
     backoff_base_seconds: 2.0
     max_retries: 4
 classifier:

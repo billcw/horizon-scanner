@@ -137,10 +137,36 @@ CREATE INDEX IF NOT EXISTS idx_theses_confidence    ON theses(confidence_rating)
 CREATE INDEX IF NOT EXISTS idx_monitoring_thesis    ON monitoring_events(thesis_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_thesis     ON decisions(thesis_id);
 
+-- Thesis version history (snapshot before each re-run)
+-- THESIS-VERSIONING-DB
+CREATE TABLE IF NOT EXISTS thesis_versions (
+    id              TEXT PRIMARY KEY,
+    thesis_id       TEXT NOT NULL,
+    version_number  INTEGER NOT NULL,
+    snapshotted_at  TEXT NOT NULL,
+    trigger         TEXT NOT NULL,      -- manual_rerun | scheduled | signal_spike
+    snapshot        TEXT NOT NULL       -- full JSON of thesis row at that moment
+);
+
+CREATE INDEX IF NOT EXISTS idx_thesis_versions_thesis ON thesis_versions(thesis_id);
+
+-- Thesis version history (snapshot before each re-run)
+-- THESIS-VERSIONING-DB
+CREATE TABLE IF NOT EXISTS thesis_versions (
+    id              TEXT PRIMARY KEY,
+    thesis_id       TEXT NOT NULL,
+    version_number  INTEGER NOT NULL,
+    snapshotted_at  TEXT NOT NULL,
+    trigger         TEXT NOT NULL,      -- manual_rerun | scheduled | signal_spike
+    snapshot        TEXT NOT NULL       -- full JSON of thesis row at that moment
+);
+
+CREATE INDEX IF NOT EXISTS idx_thesis_versions_thesis ON thesis_versions(thesis_id);
+
 -- Manageable collector source library (arxiv categories, trends topics, subreddits)
 CREATE TABLE IF NOT EXISTS collector_sources (
     id            TEXT PRIMARY KEY,
-    source_type   TEXT NOT NULL,          -- arxiv | trends | reddit
+    source_type   TEXT NOT NULL,          -- arxiv | trends | reddit | uspto | uspto
     value         TEXT NOT NULL,          -- e.g. cs.AI | solid state battery | Futurology
     label         TEXT,                   -- optional human note
     enabled       INTEGER NOT NULL DEFAULT 1,
@@ -193,6 +219,114 @@ def _run_migrations(conn: sqlite3.Connection):
 # ---------------------------------------------------------------------------
 # Connection helper
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Thesis versioning
+# ---------------------------------------------------------------------------
+
+def snapshot_thesis_version(thesis_id: str, trigger: str = "manual_rerun") -> int:
+    """
+    Snapshot the current thesis row into thesis_versions before a re-run.
+    Returns the new version_number, or 0 if thesis not found.
+    Trigger values: manual_rerun | scheduled | signal_spike
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM theses WHERE id=?", (thesis_id,)
+        ).fetchone()
+        if row is None:
+            return 0
+        count = conn.execute(
+            "SELECT COUNT(*) FROM thesis_versions WHERE thesis_id=?",
+            (thesis_id,)
+        ).fetchone()[0]
+        version_number = count + 1
+        version_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        snapshot = json.dumps(dict(row))
+        conn.execute(
+            """INSERT INTO thesis_versions
+               (id, thesis_id, version_number, snapshotted_at, trigger, snapshot)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (version_id, thesis_id, version_number, now, trigger, snapshot)
+        )
+        return version_number
+
+
+def get_thesis_versions(thesis_id: str) -> list:
+    """
+    Return all prior versions of a thesis, oldest first.
+    Each entry is a dict with version_number, snapshotted_at, trigger,
+    and the full snapshot parsed back to a dict.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM thesis_versions
+               WHERE thesis_id=?
+               ORDER BY version_number ASC""",
+            (thesis_id,)
+        ).fetchall()
+        result = []
+        for r in rows:
+            entry = dict(r)
+            entry["snapshot"] = json.loads(entry["snapshot"])
+            result.append(entry)
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Thesis versioning
+# ---------------------------------------------------------------------------
+
+def snapshot_thesis_version(thesis_id: str, trigger: str = "manual_rerun") -> int:
+    """
+    Snapshot the current thesis row into thesis_versions before a re-run.
+    Returns the new version_number, or 0 if thesis not found.
+    Trigger values: manual_rerun | scheduled | signal_spike
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM theses WHERE id=?", (thesis_id,)
+        ).fetchone()
+        if row is None:
+            return 0
+        count = conn.execute(
+            "SELECT COUNT(*) FROM thesis_versions WHERE thesis_id=?",
+            (thesis_id,)
+        ).fetchone()[0]
+        version_number = count + 1
+        version_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        snapshot = json.dumps(dict(row))
+        conn.execute(
+            """INSERT INTO thesis_versions
+               (id, thesis_id, version_number, snapshotted_at, trigger, snapshot)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (version_id, thesis_id, version_number, now, trigger, snapshot)
+        )
+        return version_number
+
+
+def get_thesis_versions(thesis_id: str) -> list:
+    """
+    Return all prior versions of a thesis, oldest first.
+    Each entry is a dict with version_number, snapshotted_at, trigger,
+    and the full snapshot parsed back to a dict.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM thesis_versions
+               WHERE thesis_id=?
+               ORDER BY version_number ASC""",
+            (thesis_id,)
+        ).fetchall()
+        result = []
+        for r in rows:
+            entry = dict(r)
+            entry["snapshot"] = json.loads(entry["snapshot"])
+            result.append(entry)
+        return result
+
 
 def get_connection() -> sqlite3.Connection:
     """Return a connection to the database, creating it if needed."""
@@ -403,6 +537,48 @@ def get_active_theses() -> list:
                ORDER BY last_updated DESC""",
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+
+def update_thesis_rings(
+    thesis_id: str,
+    ring1: list = None,
+    ring2: list = None,
+    ring3: list = None,
+    ring4: list = None,
+) -> bool:
+    """
+    Persist updated entities_ring1-4 JSON back to a thesis row.
+    Called by the deepen-counterparties background job after
+    deepen_counterparties() mutates company objects in place.
+
+    Only writes rings that are passed as non-None (None means unchanged).
+    Returns True if a row was updated.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    updates = []
+    params = []
+    if ring1 is not None:
+        updates.append("entities_ring1 = ?")
+        params.append(json.dumps(ring1))
+    if ring2 is not None:
+        updates.append("entities_ring2 = ?")
+        params.append(json.dumps(ring2))
+    if ring3 is not None:
+        updates.append("entities_ring3 = ?")
+        params.append(json.dumps(ring3))
+    if ring4 is not None:
+        updates.append("entities_ring4 = ?")
+        params.append(json.dumps(ring4))
+    if not updates:
+        return False
+    updates.append("last_updated = ?")
+    params.append(now)
+    params.append(thesis_id)
+    sql = "UPDATE theses SET " + ", ".join(updates) + " WHERE id = ?"
+    with get_connection() as conn:
+        cur = conn.execute(sql, params)
+        return cur.rowcount > 0
 
 
 def update_thesis_state(thesis_id: str, new_state: str, note: str = ""):

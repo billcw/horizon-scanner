@@ -59,7 +59,11 @@ logger = logging.getLogger(__name__)
 SEARCH_URL = "https://api.uspto.gov/api/v1/patent/applications/search"
 API_KEY_ENV = "USPTO_ODP_KEY"
 
-# The field we search keywords against (documented, reliable).
+# USPTO-KEYWORD-FREEFORM-SEARCH
+# Free-form search (no field prefix) matches the phrase across all searchable fields.
+# Field-scoped title search produces 404 for multi-word phrases that rarely appear
+# verbatim in invention titles. Free-form phrase search is more productive.
+# TITLE_FIELD kept for reference / CPC mode but not used in keyword query.
 TITLE_FIELD = "applicationMetaData.inventionTitle"
 
 # Candidate CPC field names to try in CPC mode. The first that returns a
@@ -131,8 +135,13 @@ def _build_keyword_body(keyword: str, offset: int, limit: int,
     Keyword-mode POST body: search the phrase against the invention-title
     field, restricted to recently filed applications, newest first.
     """
+    # Free-form phrase search: wraps keyword in quotes so multi-word phrases
+    # are matched as a phrase across all searchable fields (title, abstract, applicant).
+    # Field-scoped title search (TITLE_FIELD:"phrase") returns 404 for most keywords
+    # because exact phrases rarely appear verbatim in invention titles.
+    q_value = f'"{keyword}"'
     return {
-        "q": f'{TITLE_FIELD}:"{keyword}"',
+        "q": q_value,
         "rangeFilters": [
             {
                 "field": "applicationMetaData.filingDate",
@@ -359,10 +368,45 @@ def run():
     if not api_key:
         logger.warning(
             "USPTO collector enabled but %s environment variable is not set. "
-            "Skipping. (Set it after ID.me verification clears your API key.)",
+            "Skipping. Set it inline: $env:USPTO_ODP_KEY=your-key before "
+            "launching, or open a new PowerShell after setting the system var.",
             API_KEY_ENV
         )
         return 0
+
+    # USPTO-AUTH-PROBE-OK
+    # One-record probe to confirm auth before a full run (uses 1 quota request).
+    logger.info("USPTO: probing auth with a 1-record test call...")
+    try:
+        from datetime import timedelta as _td
+        _to   = datetime.now(timezone.utc).date().isoformat()
+        _from = (datetime.now(timezone.utc).date() - _td(days=90)).isoformat()
+        _pb = {
+            "q": "applicationMetaData.inventionTitle:quantum",
+            "rangeFilters": [{"field": "applicationMetaData.filingDate",
+                              "valueFrom": _from, "valueTo": _to}],
+            "pagination": {"offset": 0, "limit": 1},
+        }
+        _ph = {
+            "x-api-key": api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "HorizonScanner/1.0 (research tool)",
+        }
+        _pr = requests.post(SEARCH_URL, json=_pb, headers=_ph, timeout=30)
+        if _pr.status_code == 200:
+            logger.info("USPTO auth OK (HTTP 200). Proceeding with collect.")
+        elif _pr.status_code in (401, 403):
+            logger.error(
+                "USPTO auth FAILED (HTTP %d). Key in %s is set but rejected. "
+                "Causes: ID.me verification pending, whitespace in key, or expired.",
+                _pr.status_code, API_KEY_ENV
+            )
+            return 0
+        else:
+            logger.warning("USPTO auth probe HTTP %d. Proceeding.", _pr.status_code)
+    except Exception as _pe:
+        logger.warning("USPTO auth probe exception: %s. Proceeding.", _pe)
 
     # Tunables (conservative defaults)
     page_limit   = int(uspto_cfg.get("page_limit", DEFAULT_PAGE_LIMIT))

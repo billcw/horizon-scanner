@@ -113,6 +113,12 @@ thesis:
   edgar_ip_excerpt_chars: 1500
   edgar_max_companies: 30
 monitoring:
+  # L4 signal-spike / quiet detection (added Session 8)
+  spike_threshold: 3
+  quiet_days: 30
+  auto_rerun_on_spike: false
+  assess_relevance: true
+  assess_min_signals: 2
   model: claude-haiku-4-5-20251001
   schedule: weekly
   probability_alert_threshold: 0.15

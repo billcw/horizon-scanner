@@ -903,3 +903,159 @@ def delete_source(source_id: str) -> bool:
             "DELETE FROM collector_sources WHERE id=?", (source_id,)
         )
         return cur.rowcount > 0
+
+
+# L4-MONITORING-DB
+def _monitoring_ensure_read_flag(conn):
+    """Idempotently add read_flag column to monitoring_events."""
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(monitoring_events)")
+    cols = [r[1] for r in cur.fetchall()]
+    if "read_flag" not in cols:
+        cur.execute("ALTER TABLE monitoring_events ADD COLUMN read_flag INTEGER DEFAULT 0")
+        conn.commit()
+
+
+def insert_monitoring_event(thesis_id, event_type, description,
+                            signal_id=None, old_state=None, new_state=None,
+                            probability_delta=None):
+    """Insert a monitoring event. Returns the new event id."""
+    import uuid as _uuid
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        _monitoring_ensure_read_flag(conn)
+        eid = str(_uuid.uuid4())
+        now = _dt.utcnow().isoformat()
+        conn.execute(
+            "INSERT INTO monitoring_events "
+            "(id, thesis_id, event_type, description, signal_id, "
+            "old_state, new_state, probability_delta, created_at, read_flag) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            (eid, thesis_id, event_type, description, signal_id,
+             old_state, new_state, probability_delta, now),
+        )
+        conn.commit()
+        return eid
+    finally:
+        conn.close()
+
+
+def get_monitoring_events(limit=100, unread_only=False):
+    """Return monitoring events newest-first, joined with thesis title."""
+    conn = get_connection()
+    try:
+        _monitoring_ensure_read_flag(conn)
+        q = (
+            "SELECT m.id, m.thesis_id, t.title, m.event_type, m.description, "
+            "m.signal_id, m.old_state, m.new_state, m.probability_delta, "
+            "m.created_at, m.read_flag "
+            "FROM monitoring_events m "
+            "LEFT JOIN theses t ON t.id = m.thesis_id "
+        )
+        if unread_only:
+            q += "WHERE m.read_flag = 0 "
+        q += "ORDER BY m.created_at DESC LIMIT ?"
+        cur = conn.execute(q, (limit,))
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_unread_monitoring_count():
+    conn = get_connection()
+    try:
+        _monitoring_ensure_read_flag(conn)
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM monitoring_events WHERE read_flag = 0")
+        return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def mark_monitoring_event_read(event_id):
+    conn = get_connection()
+    try:
+        _monitoring_ensure_read_flag(conn)
+        conn.execute(
+            "UPDATE monitoring_events SET read_flag = 1 WHERE id = ?",
+            (event_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_all_monitoring_read():
+    conn = get_connection()
+    try:
+        _monitoring_ensure_read_flag(conn)
+        conn.execute("UPDATE monitoring_events SET read_flag = 1 WHERE read_flag = 0")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# L4-MONITORING-RELEVANCE-DB
+def get_recent_cluster_signals(cluster_id, limit=10):
+    """
+    Return the most recent `limit` signals on a cluster, newest first.
+    Each row is a dict with id, title, category, theme, collected_at.
+    Used by the L4 relevance assessment to judge new signals against a thesis.
+    Returns [] if cluster_id is falsy.
+    """
+    if not cluster_id:
+        return []
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT id, title, category, theme, collected_at "
+            "FROM signals WHERE cluster_id = ? "
+            "ORDER BY collected_at DESC LIMIT ?",
+            (cluster_id, int(limit)))
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+# Baseline table for spike detection (between-pass signal deltas).
+def _monitoring_ensure_baseline_table(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS thesis_signal_baseline ("
+        "thesis_id TEXT PRIMARY KEY, "
+        "last_count INTEGER DEFAULT 0, "
+        "last_checked TEXT)")
+    conn.commit()
+
+
+def get_thesis_baseline(thesis_id):
+    """Return (last_count, last_checked) or (None, None) if absent."""
+    conn = get_connection()
+    try:
+        _monitoring_ensure_baseline_table(conn)
+        cur = conn.execute(
+            "SELECT last_count, last_checked FROM thesis_signal_baseline "
+            "WHERE thesis_id = ?", (thesis_id,))
+        row = cur.fetchone()
+        if row is None:
+            return (None, None)
+        return (row[0], row[1])
+    finally:
+        conn.close()
+
+
+def set_thesis_baseline(thesis_id, count):
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        _monitoring_ensure_baseline_table(conn)
+        now = _dt.utcnow().isoformat()
+        conn.execute(
+            "INSERT INTO thesis_signal_baseline (thesis_id, last_count, last_checked) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(thesis_id) DO UPDATE SET last_count = ?, last_checked = ?",
+            (thesis_id, count, now, count, now))
+        conn.commit()
+    finally:
+        conn.close()
